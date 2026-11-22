@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+.env
+# Runtime state and downloaded/user documents are never committed.
+.rag/
+data/
+!data/.gitkeep

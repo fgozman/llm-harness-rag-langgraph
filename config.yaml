@@ -1,0 +1,52 @@
+# Non-secret defaults. Environment variables and .env override these values.
+# Model fields left unset are filled from the hardware profile (see rag.config.PROFILE_DEFAULTS).
+
+hardware_profile: mac
+device: auto
+docs_dir: ./data/docs
+state_dir: ./.rag
+
+llm:
+  provider: anthropic
+  generation_model: claude-sonnet-5-5
+  upgrade_model: claude-opus-5-5
+  cheap_model: claude-haiku-5-5
+  grading_effort: low
+  rewriting_effort: medium
+
+embedding:
+  batch_size: 32
+
+reranker:
+  fallback_model: BAAI/bge-reranker-v2-m3
+  top_k: 6
+
+qdrant:
+  url: http://localhost:6333
+  collection: rag_chunks
+  sparse_model: Qdrant/bm25
+
+phoenix:
+  enabled: true
+  collector_endpoint: http://localhost:6006
+  project_name: rag
+
+chunking:
+  child_target_tokens: 500
+  child_max_tokens: 600
+  overlap_ratio: 0.12
+  parent_max_tokens: 2000
+
+ingestion:
+  contextualize: true
+  max_workers: 4
+
+graph:
+  max_rewrite_retries: 2
+  max_regenerations: 1
+  min_relevant_passages: 2
+  context_token_budget: 12000
+  max_query_variants: 4
+
+corpus:
+  arxiv_category: cs.IR
