@@ -9,7 +9,7 @@ Read `SPEC.md` and `PLAN.md` first after any context reset.
 | 0 — Scaffolding | ✅ done (2026-11-22) |
 | 1 — Ingestion | ✅ done (2026-11-22) |
 | Enrichment for OpenAI/Ollama | ✅ done (2026-11-22) |
-| Test corpus (Section 2) | ✅ built (97 docs); golden Q&A set is Phase 5 |
+| Test corpus (Section 2) | ✅ built (97 docs, incl. 10 full GAO PDFs); golden Q&A set is Phase 5 |
 | 2 — Retrieval | ⏭ next |
 | 3–6 | not started |
 
@@ -24,7 +24,7 @@ github_releases, canary), sources fixed in `scripts/corpus_sources.yaml`. 28 uni
 |---|---|---|
 | SEC EDGAR | 40 | 8 companies (AMD UBER ABNB PLTR NET LYFT DDOG BKNG): 10-Q filed Aug 2026 + Nov 2026, earnings 8-K EX-99.1 for each, + May 2026 10-Q flagged `pre_cutoff: true` |
 | arXiv cs.IR | 30 | IDs ≥ 2608 (first submitted ≥ Aug 2026), primary category cs.IR, CC BY / CC0 only, 3 s delay |
-| GAO | 10 | **RSS highlights only** (see open question 1) |
+| GAO | 10 | **full report PDFs downloaded manually by the user** (28–70 pages; one 2-page Spotlight), 2026-11-19/20; titles/dates from the RSS feed |
 | Federal Register | 10 | significant Rules ≥ 2026-07-01, 3–80 pages, full-text HTML |
 | GitHub releases | 3 | langgraph (58 releases), phoenix (>100), qdrant-client since 2026-07-01 |
 | Canary (fiction) | 4 | 1 PPTX w/ speaker notes, 2 DOCX, 1 XLSX; 15 answerable facts + 4 near-miss unanswerables |
@@ -39,8 +39,10 @@ API facts verified live (2026-11-22):
   `arXiv` metadata has `<license>`); OAI datestamps/`created` reflect the latest version, so first-submission month
   comes from the ID; v1 date from the Atom API.
 - GAO: no API; gao.gov (Akamai) returns 403 for report pages, PDFs and robots.txt to scripted clients; GovInfo's
-  GAOREPORTS collection ends in 2008. Only the official RSS feed is accessible (25 latest items, plain-text
-  "What GAO Found" highlights incl. flattened tables). I did not attempt to bypass the bot protection.
+  GAOREPORTS collection ends in 2008. Only the official RSS feed is accessible. I did not attempt to bypass the
+  bot protection. Resolution (user decision): full PDFs are downloaded by hand into `data/test_corpus/gao/` as
+  `gao-XX-XXXXXX.pdf`; the builder registers them (title/date from RSS, fallback PDF metadata) and writes RSS
+  highlights only for reports without a PDF, up to `max_reports`. The registry prunes records whose files are gone.
 - Federal Register: array params must be repeated `key[]=` (indexed keys are rejected or silently ignored).
 - GitHub: releases API paginated until published_at < cutoff; optional `GITHUB_TOKEN`.
 
@@ -155,8 +157,12 @@ Phase 1:
 
 ## Next (Phase 2 — Retrieval)
 
-- The full test corpus is being indexed (no contextualization) into collection `test_corpus` with state dir
-  `.rag/test_corpus` — usable for Phase 2 benchmarks (rerank latency p50/p95).
+- The full test corpus is indexed (no contextualization) in collection `test_corpus`, state dir `.rag/test_corpus`:
+  97 docs, 8,684 chunks, 0 parse failures — use it for Phase 2 benchmarks (rerank latency p50/p95). Adding the GAO
+  PDFs re-indexed exactly those 10 files and removed the 10 old highlight docs (184 s).
+- Parsing quirks seen in GAO PDFs (Docling layout model), to evaluate in Phase 2: side-heading layout sometimes
+  extracted as a 2-column table; the running header "U.S. GOVERNMENT ACCOUNTABILITY OFFICE" sometimes becomes a
+  section heading.
 
 - Inspect qdrant-client 1.20 Query API (prefetch + `FusionQuery(RRF)`) — spiked in Phase 1, works.
 - Decide: server-side RRF (Qdrant) vs client-side RRF across multi-query variants (test-first RRF + dedup).
@@ -167,9 +173,4 @@ Phase 1:
 
 ## Open questions
 
-1. **GAO full reports**: gao.gov blocks automated downloads, so the corpus has only GAO RSS highlights (no full
-   reports → "table and appendix lookups in GAO reports" can't be tested). Options: (a) you download ~10 GAO PDFs
-   manually into a folder the builder picks up, (b) substitute another public-domain source with an official API
-   (e.g. CRS reports via the congress.gov API — needs a free api.data.gov key; or congressional committee reports
-   via the GovInfo API), (c) keep highlights only.
-2. OpenAI enrichment is untested against the live API (no `OPENAI_API_KEY`).
+1. OpenAI enrichment is untested against the live API (no `OPENAI_API_KEY`).

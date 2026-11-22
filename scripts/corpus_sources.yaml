@@ -28,6 +28,8 @@ arxiv:
   delay_s: 3
 
 gao:
+  # gao.gov blocks scripted downloads: put full-report PDFs in <output_dir>/gao/ as gao-XX-XXXXXX.pdf (manual).
+  # Titles/dates come from the RSS feed; RSS highlights are written only for reports without a PDF.
   enabled: true
   feed_url: https://www.gao.gov/rss/reports.xml
   max_reports: 10

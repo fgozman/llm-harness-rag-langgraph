@@ -43,6 +43,13 @@ class Registry:
     def upsert(self, record: SourceRecord) -> None:
         self._records[record.path] = record
 
+    def prune_missing(self, out_dir: Path) -> list[str]:
+        """Forget records whose files were deleted (e.g. replaced by hand), so SOURCES.md matches the disk."""
+        gone = [p for p in self._records if not (out_dir / p).exists()]
+        for p in gone:
+            del self._records[p]
+        return sorted(gone)
+
     def save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps([asdict(r) for r in self.records], indent=2) + "\n")

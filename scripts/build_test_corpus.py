@@ -97,6 +97,8 @@ def main(
         try:
             results.append(run())
         finally:
+            for path in registry.prune_missing(cfg.output_dir):
+                console.print(f"[dim]dropped record for missing file {path}[/dim]")
             # Persist provenance after every source so an interrupted run loses nothing.
             registry.save()
             (cfg.output_dir / "SOURCES.md").write_text(registry.render_markdown())

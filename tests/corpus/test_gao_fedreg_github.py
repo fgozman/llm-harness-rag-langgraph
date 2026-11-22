@@ -1,9 +1,14 @@
 from datetime import date
+from pathlib import Path
 from typing import Any
 
+import pymupdf
+
+from corpus_builder.config import GaoConfig
 from corpus_builder.fedreg import select_documents
-from corpus_builder.gao import GaoItem, parse_feed, render_report
+from corpus_builder.gao import GaoCollector, GaoItem, parse_feed, render_report
 from corpus_builder.github_releases import Release, parse_releases, render_release_notes
+from corpus_builder.registry import Registry, SourceRecord
 
 GAO_FEED = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel><title>Reports News from the GAO</title>
@@ -108,3 +113,77 @@ def test_release_notes_markdown() -> None:
     assert "## 1.2.24 (2026-11-10)" in md and "Fixed X." in md
     assert "## prebuilt==1.1.3 (2026-09-01)" in md and "_No release notes._" in md
     assert md.index("1.2.24") < md.index("prebuilt==1.1.3")
+
+
+# --- Manually downloaded GAO PDFs (gao.gov blocks scripted downloads) ---------------------------------
+
+
+class FeedOnlyClient:
+    """Stands in for PoliteClient: serves the RSS feed and fails on anything else (no PDF downloads)."""
+
+    def __init__(self, feed: str) -> None:
+        self.feed = feed
+
+    def set_min_interval(self, host: str, seconds: float) -> None:
+        pass
+
+    def get_text(self, url: str) -> str:
+        assert url.endswith("reports.xml"), url
+        return self.feed
+
+
+def make_pdf(path: Path, title: str, created: str) -> None:
+    doc = pymupdf.open()
+    # PyMuPDF is only partially typed.
+    doc.new_page().insert_text((72, 72), "GAO report body")  # pyright: ignore[reportUnknownMemberType]
+    doc.set_metadata({"title": title, "creationDate": created})  # pyright: ignore[reportUnknownMemberType]
+    doc.save(str(path))  # pyright: ignore[reportUnknownMemberType]
+
+
+def collector(tmp_path: Path, registry: Registry, max_reports: int = 2) -> GaoCollector:
+    cfg = GaoConfig(max_reports=max_reports)
+    return GaoCollector(cfg, FeedOnlyClient(GAO_FEED), tmp_path, registry, date(2026, 7, 1))
+
+
+def test_manual_pdfs_are_registered_with_feed_metadata(tmp_path: Path) -> None:
+    (tmp_path / "gao").mkdir()
+    make_pdf(
+        tmp_path / "gao" / "gao-27-108458.pdf",
+        "GAO-27-108458, AI and Cybersecurity",
+        "D:20261117075241-05'00'",
+    )
+    registry = Registry(tmp_path / "sources.json")
+    stats = collector(tmp_path, registry, max_reports=1).collect()
+    (record,) = registry.records
+    assert record.path == "gao/gao-27-108458.pdf"
+    assert record.title == "AI and Cybersecurity: Technologies Can Magnify Cyberattacks"
+    assert record.published == "2026-11-20"
+    assert record.url == "https://www.gao.gov/products/gao-27-108458"
+    assert "full report" in record.notes
+    assert stats.added == 1
+    assert not list((tmp_path / "gao").glob("*.txt")), "no highlights for a report that has its PDF"
+
+
+def test_pdf_not_in_feed_falls_back_to_pdf_metadata(tmp_path: Path) -> None:
+    (tmp_path / "gao").mkdir()
+    make_pdf(tmp_path / "gao" / "gao-27-100001.pdf", "GAO-27-100001, Some Report", "D:20261001120000-04'00'")
+    registry = Registry(tmp_path / "sources.json")
+    collector(tmp_path, registry, max_reports=1).collect()
+    record = next(r for r in registry.records if r.path.endswith(".pdf"))
+    assert (record.title, record.published) == ("GAO-27-100001, Some Report", "2026-10-01")
+
+
+def test_highlights_only_fill_up_to_max_for_reports_without_pdf(tmp_path: Path) -> None:
+    registry = Registry(tmp_path / "sources.json")
+    stats = collector(tmp_path, registry, max_reports=5).collect()
+    assert [r.path for r in registry.records] == ["gao/GAO-27-108458_highlights.txt"]
+    assert any("only 1" in m for m in stats.missing)
+
+
+def test_registry_prunes_records_whose_files_are_gone(tmp_path: Path) -> None:
+    registry = Registry(tmp_path / "sources.json")
+    (tmp_path / "kept.md").write_text("x")
+    for name in ("kept.md", "gone.txt"):
+        registry.upsert(SourceRecord(name, "gao", name, "u", "2026-11-20", "PD"))
+    assert registry.prune_missing(tmp_path) == ["gone.txt"]
+    assert [r.path for r in registry.records] == ["kept.md"]

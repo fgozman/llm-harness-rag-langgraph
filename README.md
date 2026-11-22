@@ -46,6 +46,8 @@ Sources are fixed in `scripts/corpus_sources.yaml` (SEC EDGAR 10-Qs/8-Ks, arXiv 
 report highlights, Federal Register rules, GitHub release notes, and locally generated fiction "canary"
 documents whose facts are written to `eval/canary_facts.jsonl`). Provenance and licenses land in
 `data/test_corpus/SOURCES.md`. Re-runs are idempotent and offline (HTTP cache under `data/test_corpus/.cache`).
+gao.gov blocks scripted downloads: save full GAO report PDFs by hand into `data/test_corpus/gao/` as
+`gao-XX-XXXXXX.pdf` and re-run the builder to register them.
 
 Embedding and reranking models run natively on the host (MPS on Apple Silicon, CUDA on Linux),
 not in Docker. Choose a profile with `HARDWARE_PROFILE=mac|gpu|cpu`.
