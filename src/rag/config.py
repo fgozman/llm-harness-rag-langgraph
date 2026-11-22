@@ -216,8 +216,8 @@ class GraphSettings(BaseModel):
 
 
 class CorpusSettings(BaseModel):
+    # Test-corpus sources live in scripts/corpus_sources.yaml; only the secret-ish contact stays here (.env).
     sec_user_agent_email: str | None = None
-    arxiv_category: str = "cs.IR"
 
 
 class Settings(BaseSettings):

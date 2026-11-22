@@ -67,7 +67,8 @@ max-args = 10
 
 [tool.pyright]
 pythonVersion = "3.12"
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
+extraPaths = ["scripts"]
 # Fixture generator drives untyped office/PDF libraries; it is a dev script, not product code.
 exclude = ["tests/fixtures"]
 typeCheckingMode = "strict"
@@ -76,6 +77,8 @@ venv = ".venv"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The corpus builder is dev tooling under scripts/, not part of the installed package.
+pythonpath = ["scripts"]
 addopts = "-ra --strict-markers -m 'not integration'"
 filterwarnings = [
     # PyMuPDF's SWIG bindings trigger this on import; not actionable for us.

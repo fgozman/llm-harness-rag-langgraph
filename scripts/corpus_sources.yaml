@@ -1,0 +1,49 @@
+# Fixed source list for scripts/build_test_corpus.py.
+# Everything here must be published on/after cutoff_date (except SEC pre-cutoff hard negatives),
+# so correct answers can only come from retrieval (LLM training cutoff ~June 2026).
+
+output_dir: data/test_corpus
+cutoff_date: 2026-07-01
+
+sec:
+  enabled: true
+  # Chosen because each filed 10-Qs in both Aug 2026 and Nov 2026 (verified against EDGAR on 2026-11-22).
+  tickers: [AMD, UBER, ABNB, PLTR, NET, LYFT, DDOG, BKNG]
+  periods:
+    - {label: "2026-08", filed_from: 2026-08-01, filed_to: 2026-08-31}
+    - {label: "2026-11", filed_from: 2026-11-01, filed_to: 2026-11-30}
+  earnings_8k_window_days: 21   # 8-K (Item 2.02) filed up to N days before the 10-Q
+  include_pre_cutoff: true      # latest 10-Q filed before cutoff_date, flagged pre_cutoff
+  min_interval_s: 0.25          # 4 req/s (SEC limit: 10 req/s); User-Agent email from CORPUS__SEC_USER_AGENT_EMAIL
+
+arxiv:
+  enabled: true
+  category: cs.IR
+  submitted_on_or_after: 2026-08-01
+  max_papers: 30
+  require_primary_category: true
+  allowed_licenses:             # CC BY (any version) and CC0 only
+    - http://creativecommons.org/licenses/by/
+    - http://creativecommons.org/publicdomain/zero/
+  delay_s: 3
+
+gao:
+  enabled: true
+  feed_url: https://www.gao.gov/rss/reports.xml
+  max_reports: 10
+
+federal_register:
+  enabled: true
+  max_documents: 10
+  document_types: [RULE]
+  significant_only: true
+  min_pages: 3
+  max_pages: 80
+
+github:
+  enabled: true
+  repos: [langchain-ai/langgraph, Arize-ai/phoenix, qdrant/qdrant-client]
+
+canary:
+  enabled: true
+  facts_path: eval/canary_facts.jsonl

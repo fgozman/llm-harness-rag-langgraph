@@ -47,3 +47,9 @@ def test_attention_impl_is_never_flash_attention() -> None:
 
 def test_mps_fallback_env_is_set_on_import() -> None:
     assert os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK") == "1"
+
+
+def test_tokenizers_parallelism_disabled_on_import() -> None:
+    # HF tokenizers' Rayon pool deadlocked mid-ingest alongside Docling's native thread pools (observed
+    # 2026-11-22 on the test corpus); sequential batch encoding avoids it at negligible cost.
+    assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"

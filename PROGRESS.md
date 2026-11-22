@@ -8,9 +8,71 @@ Read `SPEC.md` and `PLAN.md` first after any context reset.
 |---|---|
 | 0 — Scaffolding | ✅ done (2026-11-22) |
 | 1 — Ingestion | ✅ done (2026-11-22) |
+| Enrichment for OpenAI/Ollama | ✅ done (2026-11-22) |
+| Test corpus (Section 2) | ✅ built (97 docs); golden Q&A set is Phase 5 |
 | 2 — Retrieval | ⏭ next |
-| Test corpus (Section 2) | not started — blocked on SEC contact email |
 | 3–6 | not started |
+
+## Test corpus — done
+
+`uv run python scripts/build_test_corpus.py` → `data/test_corpus/` (gitignored), provenance in
+`data/test_corpus/SOURCES.md` + `sources.json`, canary facts in `eval/canary_facts.jsonl` (committed).
+Code: `scripts/build_test_corpus.py`, `scripts/corpus_builder/` (http, registry, config, sec, arxiv, gao, fedreg,
+github_releases, canary), sources fixed in `scripts/corpus_sources.yaml`. 28 unit tests in `tests/corpus/`.
+
+| source | docs | notes |
+|---|---|---|
+| SEC EDGAR | 40 | 8 companies (AMD UBER ABNB PLTR NET LYFT DDOG BKNG): 10-Q filed Aug 2026 + Nov 2026, earnings 8-K EX-99.1 for each, + May 2026 10-Q flagged `pre_cutoff: true` |
+| arXiv cs.IR | 30 | IDs ≥ 2608 (first submitted ≥ Aug 2026), primary category cs.IR, CC BY / CC0 only, 3 s delay |
+| GAO | 10 | **RSS highlights only** (see open question 1) |
+| Federal Register | 10 | significant Rules ≥ 2026-07-01, 3–80 pages, full-text HTML |
+| GitHub releases | 3 | langgraph (58 releases), phoenix (>100), qdrant-client since 2026-07-01 |
+| Canary (fiction) | 4 | 1 PPTX w/ speaker notes, 2 DOCX, 1 XLSX; 15 answerable facts + 4 near-miss unanswerables |
+
+Verified behavior: second run = 0.5 s, all 97 skipped, zero network (permanent HTTP cache; `--refresh` to re-fetch).
+
+API facts verified live (2026-11-22):
+- SEC: 10 req/s limit (we use 4/s) + UA with contact; submissions JSON is columnar; exhibit types only via
+  `{acc}-index-headers.html`; **`Financial_Report.xlsx` is not provided for any of the 16 post-cutoff 10-Qs**
+  (not in `index.json`, GET → 404) — recorded per filing as a note; XLSX coverage comes from the canary workbook.
+- arXiv: Atom API has no license field; OAI-PMH moved to `https://oaipmh.arxiv.org/oai` (set spec `cs:cs:IR`,
+  `arXiv` metadata has `<license>`); OAI datestamps/`created` reflect the latest version, so first-submission month
+  comes from the ID; v1 date from the Atom API.
+- GAO: no API; gao.gov (Akamai) returns 403 for report pages, PDFs and robots.txt to scripted clients; GovInfo's
+  GAOREPORTS collection ends in 2008. Only the official RSS feed is accessible (25 latest items, plain-text
+  "What GAO Found" highlights incl. flattened tables). I did not attempt to bypass the bot protection.
+- Federal Register: array params must be repeated `key[]=` (indexed keys are rejected or silently ignored).
+- GitHub: releases API paginated until published_at < cutoff; optional `GITHUB_TOKEN`.
+
+## Enrichment for OpenAI / Ollama — done
+
+- `ingestion/context_backends.py`: `AnthropicBackend` (explicit caching, Batches) and `OpenAIResponsesBackend`
+  (OpenAI + Ollama via the Responses API, sync only). Provider-neutral `ContextPrompt` (system, document, chunk).
+- OpenAI: `store=false` (untrusted document text never retained), `prompt_cache_key` = hash(document) so same-doc
+  requests route to the same cache, `reasoning.effort="none"` by default (reasoning tokens count against the
+  150-token output cap). Ollama: base `{ollama_base_url}/v1/`, `think: false` unless an effort is configured.
+- Per-provider model defaults (`PROVIDER_MODELS`): openai gpt-6.2-sol / gpt-6.2-astra / gpt-6-luna (docs
+  2026-11-22), ollama qwen3:8b / qwen3:32b / qwen3:8b. OpenAI pricing added for cost estimates.
+- `contextualize_mode=batch` with a non-batch provider → clear config error; `auto` silently stays sync.
+- Verified live: Anthropic (sync + batch integration tests), **Ollama** (`llama3:latest`, integration test +
+  full CLI ingest of fixtures: 20/20 chunks enriched, 26 s). **OpenAI not live-verified** (no key); covered by
+  HTTP-level tests with the real SDK over a mock transport.
+- Fix: empty `.env` values (`OPENAI_API_KEY=`) are now treated as unset (`env_ignore_empty`).
+- Both SDKs (anthropic ≥ 2, openai ≥ 3) use their own `httpx2` stack; mocks must use `httpx2.MockTransport`.
+
+## Ingestion fixes found by the real corpus
+
+1. **Inline-XBRL 10-Qs**: Docling sniffs iXBRL and routes it to its XBRL backend (needs `arelle`; keeps only XBRL
+   text blocks/facts, drops MD&A). We now parse `.htm/.html` containing the iXBRL namespace with Docling's
+   `HTMLDocumentBackend` directly (same pattern Docling uses internally), after stripping the hidden
+   `<ix:header>` metadata.
+2. **SEC tables**: Docling repeats spanned cells, EDGAR adds spacer columns and separate `$`/`%`/`)` cells → tables
+   were mostly empty pipes. `clean_table` attaches symbols, drops empty rows and columns that are empty or repeat
+   their left neighbour (lossless), e.g. `| Revenue | $13,467 | $14,766 | 10% | 10% |`. Applies to all tables.
+3. **SEC headings**: "PART I …"/"ITEM 2. …" bold lines promoted to headings (iXBRL path only) → 10-Qs regain
+   section structure for chunking.
+4. **Deadlock**: HF tokenizers' Rayon pool hung mid-ingest (stack sampled: main thread in `encode_batch` waiting on
+   a Rayon latch) next to Docling's thread pools → `TOKENIZERS_PARALLELISM=false` set by default in `devices.py`.
 
 ## Phase 1 — done
 
@@ -93,6 +155,9 @@ Phase 1:
 
 ## Next (Phase 2 — Retrieval)
 
+- The full test corpus is being indexed (no contextualization) into collection `test_corpus` with state dir
+  `.rag/test_corpus` — usable for Phase 2 benchmarks (rerank latency p50/p95).
+
 - Inspect qdrant-client 1.20 Query API (prefetch + `FusionQuery(RRF)`) — spiked in Phase 1, works.
 - Decide: server-side RRF (Qdrant) vs client-side RRF across multi-query variants (test-first RRF + dedup).
 - Qwen3-Reranker-0.6B per model card (LLM yes/no logits), fallback bge-reranker-v2-m3; benchmark p50/p95 on mac.
@@ -102,6 +167,9 @@ Phase 1:
 
 ## Open questions
 
-1. `CORPUS__SEC_USER_AGENT_EMAIL` — contact email for SEC EDGAR User-Agent (needed before building the test corpus).
-2. Contextualization for non-Anthropic providers (OpenAI/Ollama): implement a sync-only path later, or keep it
-   Anthropic-only? Currently errors clearly and suggests `--no-contextualize`.
+1. **GAO full reports**: gao.gov blocks automated downloads, so the corpus has only GAO RSS highlights (no full
+   reports → "table and appendix lookups in GAO reports" can't be tested). Options: (a) you download ~10 GAO PDFs
+   manually into a folder the builder picks up, (b) substitute another public-domain source with an official API
+   (e.g. CRS reports via the congress.gov API — needs a free api.data.gov key; or congressional committee reports
+   via the GovInfo API), (c) keep highlights only.
+2. OpenAI enrichment is untested against the live API (no `OPENAI_API_KEY`).

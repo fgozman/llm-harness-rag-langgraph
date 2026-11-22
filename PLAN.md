@@ -53,7 +53,7 @@ src/rag/
   graph/               state.py, nodes/, edges.py, build.py (Phase 3)
   api/                 FastAPI app (Phase 6)
 eval/                  golden set generation, evaluators, experiment runners (Phase 5)
-scripts/               build_test_corpus.py + corpus_sources.yaml (test corpus, Section 2)
+scripts/               build_test_corpus.py, corpus_sources.yaml, corpus_builder/ (per-source collectors)
 tests/                 unit + integration (`-m integration`), fixtures in tests/fixtures/
 ```
 
@@ -68,7 +68,7 @@ Subpackages are created in the phase that fills them (no empty stubs).
       Check: ingest fixtures; re-run no-op; modify one file → only it re-indexed; delete → chunks removed.
 - [ ] **Phase 2 — Retrieval**: hybrid + RRF, Qwen3 reranker (model-card usage), parent expansion, dedup, context budget,
       metadata filters, `rag search`. Check: hybrid beats dense-only on exact-code query; rerank p50/p95 on mac in PROGRESS.
-- [ ] **Test corpus** (Section 2, before Phase 5; can run in parallel with Phase 2/3): `scripts/build_test_corpus.py`.
+- [x] **Test corpus** (Section 2): `scripts/build_test_corpus.py` + `scripts/corpus_builder/` (GAO: highlights only).
 - [ ] **Phase 3 — LangGraph pipeline**: all nodes, routing + loop caps (test-first w/ fake LLM), checkpointer, streaming,
       citations, `rag ask` / `rag chat`. One end-to-end integration test.
 - [ ] **Phase 4 — Phoenix tracing**: register(), manual RETRIEVER/RERANKER spans, session.id, token counts,

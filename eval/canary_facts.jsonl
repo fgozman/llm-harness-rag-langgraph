@@ -1,0 +1,19 @@
+{"id": "pptx-1", "file": "canary/vellmark_board_briefing_2026-q3.pptx", "location": "slide 2", "question": "What revenue did Vellmark report for Q3 2026?", "answer": "EUR 41.7 million", "answerable": true}
+{"id": "pptx-2", "file": "canary/vellmark_board_briefing_2026-q3.pptx", "location": "slide 2 speaker notes", "question": "Which customer drove Vellmark's Q3 backlog growth?", "answer": "Norrsken Air", "answerable": true}
+{"id": "pptx-3", "file": "canary/vellmark_board_briefing_2026-q3.pptx", "location": "slide 3", "question": "What is the name of Vellmark's composite wing-rib programme?", "answer": "Project Tern", "answerable": true}
+{"id": "pptx-4", "file": "canary/vellmark_board_briefing_2026-q3.pptx", "location": "slide 3 speaker notes", "question": "When is Project Tern's first article inspection?", "answer": "14 January 2027", "answerable": true}
+{"id": "pptx-5", "file": "canary/vellmark_board_briefing_2026-q3.pptx", "location": "slide 4 speaker notes", "question": "Which plant has the highest scrap rate at Vellmark?", "answer": "Kalmar", "answerable": true}
+{"id": "pol-1", "file": "canary/vellmark_supplier_quality_policy.docx", "location": "section 'Supplier tiers'", "question": "How often are Tier A suppliers audited?", "answer": "every 18 months", "answerable": true}
+{"id": "pol-2", "file": "canary/vellmark_supplier_quality_policy.docx", "location": "table 1", "question": "What is the maximum allowed defect rate for Tier B suppliers?", "answer": "350 ppm", "answerable": true}
+{"id": "pol-3", "file": "canary/vellmark_supplier_quality_policy.docx", "location": "table 1", "question": "Which supplier tier requires a resident quality engineer?", "answer": "Tier C", "answerable": true}
+{"id": "pol-4", "file": "canary/vellmark_supplier_quality_policy.docx", "location": "section 'Escalation'", "question": "Who chairs Vellmark's supplier escalation board?", "answer": "Ingrid Solberg", "answerable": true}
+{"id": "inc-1", "file": "canary/vellmark_incident_review_2026-09.docx", "location": "section 'Summary'", "question": "Which part failed in incident VA-2026-031?", "answer": "titanium shim", "answerable": true}
+{"id": "inc-2", "file": "canary/vellmark_incident_review_2026-09.docx", "location": "section 'Root cause'", "question": "What torque value was wrongly specified in VA-2026-031?", "answer": "62 Nm", "answerable": true}
+{"id": "inc-3", "file": "canary/vellmark_incident_review_2026-09.docx", "location": "section 'Corrective actions'", "question": "By when must the VA-2026-031 fixture be replaced?", "answer": "31 October 2026", "answerable": true}
+{"id": "xls-1", "file": "canary/vellmark_fleet_metrics_2026.xlsx", "location": "sheet 'Fleet'", "question": "How many flight hours did airframe VX-214 log in 2026?", "answer": "1,932", "answerable": true}
+{"id": "xls-2", "file": "canary/vellmark_fleet_metrics_2026.xlsx", "location": "sheet 'Fleet'", "question": "Which operator flies airframe VX-209?", "answer": "Bris Regional", "answerable": true}
+{"id": "xls-3", "file": "canary/vellmark_fleet_metrics_2026.xlsx", "location": "sheet 'Warranty'", "question": "How much was paid in warranty claims for the VR-9 actuator?", "answer": "EUR 118,400", "answerable": true}
+{"id": "neg-1", "file": "canary/vellmark_board_briefing_2026-q3.pptx", "location": "-", "question": "What revenue did Vellmark report for Q2 2026?", "answer": "", "answerable": false}
+{"id": "neg-2", "file": "canary/vellmark_supplier_quality_policy.docx", "location": "-", "question": "How often are Tier D suppliers audited?", "answer": "", "answerable": false}
+{"id": "neg-3", "file": "canary/vellmark_incident_review_2026-09.docx", "location": "-", "question": "Which part failed in incident VA-2026-032?", "answer": "", "answerable": false}
+{"id": "neg-4", "file": "canary/vellmark_fleet_metrics_2026.xlsx", "location": "-", "question": "How many flight hours did airframe VX-221 log in 2026?", "answer": "", "answerable": false}

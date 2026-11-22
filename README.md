@@ -31,6 +31,22 @@ Re-running is a no-op unless files changed: a SQLite manifest (`.rag/rag.db`) tr
 Changed files are re-indexed, deleted files have their chunks removed. Supported: PDF, DOCX, PPTX,
 XLSX, HTML, Markdown, TXT. First run downloads models (Qwen3-Embedding, Docling layout models).
 
+Contextual enrichment uses the configured provider's cheap model: Anthropic (prompt caching, and the
+Message Batches API for large runs), OpenAI or a local Ollama model (Responses API, synchronous).
+Set `LLM__PROVIDER=openai|ollama` and optionally `LLM__CHEAP_MODEL`.
+
+## Test corpus (post-cutoff documents for evaluation)
+
+```bash
+uv run python scripts/build_test_corpus.py            # builds data/test_corpus/ (gitignored)
+uv run python scripts/build_test_corpus.py --only arxiv,github --refresh
+```
+
+Sources are fixed in `scripts/corpus_sources.yaml` (SEC EDGAR 10-Qs/8-Ks, arXiv CC BY/CC0 papers, GAO
+report highlights, Federal Register rules, GitHub release notes, and locally generated fiction "canary"
+documents whose facts are written to `eval/canary_facts.jsonl`). Provenance and licenses land in
+`data/test_corpus/SOURCES.md`. Re-runs are idempotent and offline (HTTP cache under `data/test_corpus/.cache`).
+
 Embedding and reranking models run natively on the host (MPS on Apple Silicon, CUDA on Linux),
 not in Docker. Choose a profile with `HARDWARE_PROFILE=mac|gpu|cpu`.
 

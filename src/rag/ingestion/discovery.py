@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import uuid
 from collections.abc import Iterator
@@ -14,6 +15,7 @@ SUPPORTED_EXTENSIONS = frozenset(
 
 _DOC_NAMESPACE = uuid.UUID("0b8f3c52-1d7e-4a3b-9e61-5f2a8c4d7e10")
 _HASH_BLOCK = 1 << 20
+IGNORE_FILE = ".ragignore"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,14 +58,25 @@ def _fingerprint(path: Path) -> DiscoveredFile:
     )
 
 
+def _ignore_patterns(root: Path) -> list[str]:
+    # Glob patterns relative to the ingest root, one per line; for non-content files such as provenance lists.
+    ignore = root / IGNORE_FILE
+    if not ignore.is_file():
+        return []
+    lines = (line.strip() for line in ignore.read_text().splitlines())
+    return [line for line in lines if line and not line.startswith("#")]
+
+
 def iter_candidates(root: Path) -> Iterator[Path]:
     root = root.resolve()
     if root.is_file():
         if _is_candidate(root, root):
             yield root
         return
+    patterns = _ignore_patterns(root)
     for path in sorted(root.rglob("*")):
-        if _is_candidate(path, root):
+        rel = path.relative_to(root).as_posix()
+        if _is_candidate(path, root) and not any(fnmatch.fnmatch(rel, p) for p in patterns):
             yield path
 
 

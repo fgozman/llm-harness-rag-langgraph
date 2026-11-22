@@ -6,6 +6,9 @@ import os
 
 # Must be set before torch initializes MPS so unsupported ops fall back to CPU instead of raising.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+# HF tokenizers' parallel batch encoding (Rayon) deadlocked mid-ingest next to Docling's thread pools;
+# sequential encoding costs little compared to the model forward pass.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import logging
 

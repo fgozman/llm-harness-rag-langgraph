@@ -60,5 +60,4 @@ graph:
   context_token_budget: 12000
   max_query_variants: 4
 
-corpus:
-  arxiv_category: cs.IR
+# Test corpus sources: scripts/corpus_sources.yaml (SEC contact email: CORPUS__SEC_USER_AGENT_EMAIL in .env).

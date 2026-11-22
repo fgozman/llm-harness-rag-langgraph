@@ -48,3 +48,14 @@ def test_accepts_a_single_file(tmp_path: Path) -> None:
 
 def test_all_spec_formats_supported() -> None:
     assert {".pdf", ".docx", ".pptx", ".xlsx", ".html", ".md", ".txt"} <= SUPPORTED_EXTENSIONS
+
+
+def test_ragignore_patterns_at_root_are_skipped(tmp_path: Path) -> None:
+    (tmp_path / ".ragignore").write_text("# provenance, not content\nSOURCES.md\ndrafts/*\n*.tmp.md\n")
+    touch(tmp_path / "SOURCES.md")
+    touch(tmp_path / "drafts" / "x.md")
+    touch(tmp_path / "keep" / "SOURCES.md")  # pattern is anchored at the root
+    touch(tmp_path / "a.tmp.md")
+    touch(tmp_path / "doc.md")
+    found = [f.path.relative_to(tmp_path).as_posix() for f in discover(tmp_path)]
+    assert found == ["doc.md", "keep/SOURCES.md"]
