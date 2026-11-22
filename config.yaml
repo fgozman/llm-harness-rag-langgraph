@@ -7,10 +7,13 @@ docs_dir: ./data/docs
 state_dir: ./.rag
 
 llm:
-  provider: anthropic
-  generation_model: claude-sonnet-5-5
-  upgrade_model: claude-opus-5-5
-  cheap_model: claude-haiku-5-5
+  provider: anthropic        # anthropic | openai | ollama
+  # Models default per provider (anthropic: claude-sonnet-5-5 / claude-opus-5-5 / claude-haiku-5-5,
+  # openai: gpt-6.2-sol / gpt-6.2-astra / gpt-6-luna, ollama: qwen3:8b / qwen3:32b / qwen3:8b).
+  # generation_model: claude-sonnet-5-5
+  # upgrade_model: claude-opus-5-5
+  # cheap_model: claude-haiku-5-5
+  ollama_base_url: http://localhost:11434
   grading_effort: low
   rewriting_effort: medium
 

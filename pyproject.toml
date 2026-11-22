@@ -14,6 +14,7 @@ dependencies = [
     "httpx>=0.28.1",
     "langchain-core>=1.8.4",
     "langgraph>=1.2.24",
+    "openai>=3.57.0",
     "openinference-instrumentation-langchain>=0.1.90",
     "pydantic>=2.14.4",
     "pydantic-settings>=2.16.3",
@@ -83,6 +84,7 @@ filterwarnings = [
 markers = [
     "integration: needs Qdrant, Phoenix, ML models, or an LLM API (run with `-m integration`)",
     "slow: integration tests with unbounded latency, e.g. Message Batches (`-m slow`)",
+    "ollama: needs a local Ollama server with a pulled model (`-m ollama`, model via OLLAMA_TEST_MODEL)",
 ]
 
 [tool.uv]

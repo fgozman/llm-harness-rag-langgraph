@@ -78,7 +78,8 @@ class ModelPricing(BaseModel):
     output: float
 
 
-# Anthropic list prices (platform.claude.com pricing, checked 2026-11-22). Haiku: <=100K-token prompt tier.
+# List prices checked 2026-11-22 (platform.claude.com / platform.openai.com pricing). Anthropic Haiku: <=100K
+# prompt tier; OpenAI: short-context tier, "cache_write_5m" holds OpenAI's 30-minute write price.
 _DEFAULT_PRICING: dict[str, ModelPricing] = {
     "claude-haiku-5-5": ModelPricing(
         input=0.10, cache_write_5m=0.125, cache_write_1h=0.20, cache_read=0.01, output=0.50
@@ -89,20 +90,57 @@ _DEFAULT_PRICING: dict[str, ModelPricing] = {
     "claude-opus-5-5": ModelPricing(
         input=4.0, cache_write_5m=5.0, cache_write_1h=8.0, cache_read=0.20, output=20.0
     ),
+    "gpt-6-luna": ModelPricing(
+        input=0.10, cache_write_5m=0.125, cache_write_1h=0.25, cache_read=0.01, output=0.50
+    ),
+    "gpt-6.2-sol": ModelPricing(
+        input=2.0, cache_write_5m=2.50, cache_write_1h=5.0, cache_read=0.10, output=10.0
+    ),
+    "gpt-6.2-astra": ModelPricing(
+        input=8.0, cache_write_5m=10.0, cache_write_1h=20.0, cache_read=0.40, output=40.0
+    ),
+}
+
+
+class _ProviderModels(BaseModel):
+    generation: str
+    upgrade: str
+    cheap: str
+
+
+# OpenAI IDs per platform.openai.com/docs/models (2026-11-22): Sol = balanced, Astra = flagship, Luna = cheap.
+# Ollama: a model the user has pulled; qwen3:8b is Ollama's own documented example.
+PROVIDER_MODELS: dict[str, _ProviderModels] = {
+    "anthropic": _ProviderModels(
+        generation="claude-sonnet-5-5", upgrade="claude-opus-5-5", cheap="claude-haiku-5-5"
+    ),
+    "openai": _ProviderModels(generation="gpt-6.2-sol", upgrade="gpt-6.2-astra", cheap="gpt-6-luna"),
+    "ollama": _ProviderModels(generation="qwen3:8b", upgrade="qwen3:32b", cheap="qwen3:8b"),
 }
 
 
 class LLMSettings(BaseModel):
     provider: LLMProvider = "anthropic"
-    generation_model: str = "claude-sonnet-5-5"
-    upgrade_model: str = "claude-opus-5-5"
-    cheap_model: str = "claude-haiku-5-5"
+    # None = the provider's default from PROVIDER_MODELS.
+    generation_model: str | None = None
+    upgrade_model: str | None = None
+    cheap_model: str | None = None
     grading_effort: Effort = "low"
     rewriting_effort: Effort = "medium"
     ollama_base_url: str = "http://localhost:11434"
+    # Optional override for OpenAI-compatible gateways (Azure, proxies); None = api.openai.com.
+    openai_base_url: str | None = None
     request_timeout_s: float = 120.0
     max_retries: int = 3
     pricing: dict[str, ModelPricing] = Field(default_factory=lambda: dict(_DEFAULT_PRICING))
+
+    @model_validator(mode="after")
+    def _apply_provider_defaults(self) -> Self:
+        models = PROVIDER_MODELS[self.provider]
+        self.generation_model = self.generation_model or models.generation
+        self.upgrade_model = self.upgrade_model or models.upgrade
+        self.cheap_model = self.cheap_model or models.cheap
+        return self
 
 
 class EmbeddingSettings(BaseModel):
@@ -155,7 +193,9 @@ class IngestionSettings(BaseModel):
     contextualize_mode: Literal["auto", "batch", "sync"] = "auto"
     contextualize_batch_threshold: int = Field(default=200, ge=1)
     contextualize_concurrency: int = Field(default=4, ge=1)
-    contextualize_effort: Effort = "low"
+    # None = provider default: anthropic "low", openai "none" (reasoning tokens would eat the tiny output
+    # budget), ollama: thinking disabled. "none"/"minimal" are not valid for Anthropic.
+    contextualize_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
     contextualize_max_output_tokens: int = Field(default=150, ge=16)
     # Spec: keep contextualization prompts under 100K tokens.
     # Measured with the local (Qwen) tokenizer, which can undercount vs Claude's, hence the margin.
@@ -185,6 +225,8 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
+        # `.env.example` ships keys as `KEY=`; an empty value must mean "not set", not an empty secret.
+        env_ignore_empty=True,
         extra="ignore",
     )
 

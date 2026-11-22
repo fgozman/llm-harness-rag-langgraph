@@ -109,3 +109,27 @@ def test_embedding_batch_size_comes_from_profile(
 ) -> None:
     monkeypatch.setenv("HARDWARE_PROFILE", profile)
     assert Settings().embedding.batch_size == batch
+
+
+def test_openai_provider_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM__PROVIDER", "openai")
+    llm = Settings().llm
+    assert (llm.generation_model, llm.upgrade_model, llm.cheap_model) == (
+        "gpt-6.2-sol",
+        "gpt-6.2-astra",
+        "gpt-6-luna",
+    )
+
+
+def test_ollama_provider_defaults_and_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LLM__PROVIDER", "ollama")
+    monkeypatch.setenv("LLM__CHEAP_MODEL", "llama3:latest")
+    llm = Settings().llm
+    assert llm.generation_model == "qwen3:8b"
+    assert llm.cheap_model == "llama3:latest"
+
+
+def test_empty_env_values_count_as_unset(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=\nANTHROPIC_API_KEY=\n")
+    s = Settings()
+    assert s.openai_api_key is None and s.anthropic_api_key is None

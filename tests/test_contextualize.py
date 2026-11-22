@@ -7,10 +7,10 @@ import pytest
 from rag.config import IngestionSettings, ModelPricing
 from rag.ingestion.contextualize import (
     Completion,
+    ContextPrompt,
     ContextRequest,
     LLMContextualizer,
     TokenUsage,
-    build_params,
     document_context,
 )
 from rag.ingestion.models import Block, BlockKind, Chunk, ParsedDocument
@@ -42,29 +42,29 @@ def chunk(i: int, section: str, text: str = "chunk text") -> Chunk:
 
 
 class FakeBackend:
-    def __init__(self, fail_on: str | None = None) -> None:
-        self.sync_calls: list[dict[str, Any]] = []
+    def __init__(self, fail_on: str | None = None, supports_batch: bool = True) -> None:
+        self.sync_calls: list[ContextPrompt] = []
         self.batches: list[list[ContextRequest]] = []
         self.fail_on = fail_on
+        self.supports_batch = supports_batch
 
-    def _answer(self, params: dict[str, Any]) -> Completion:
-        last = params["messages"][0]["content"][-1]["text"]
-        if self.fail_on and self.fail_on in last:
+    def _answer(self, p: ContextPrompt) -> Completion:
+        if self.fail_on and self.fail_on in p.chunk:
             raise RuntimeError("api down")
-        snippet = re.search(r"<chunk>\n(.*?)\n</chunk>", last, re.S)
+        snippet = re.search(r"<chunk>\n(.*?)\n</chunk>", p.chunk, re.S)
         assert snippet is not None
         return Completion(text=f"  ctx for {snippet.group(1)}  ", usage=TokenUsage(input=100, output=10))
 
-    def complete(self, params: dict[str, Any]) -> Completion:
-        self.sync_calls.append(params)
-        return self._answer(params)
+    def complete(self, prompt: ContextPrompt) -> Completion:
+        self.sync_calls.append(prompt)
+        return self._answer(prompt)
 
     def complete_batch(self, requests: Sequence[ContextRequest]) -> dict[str, Completion]:
         self.batches.append(list(requests))
         out: dict[str, Completion] = {}
         for r in requests:
             try:
-                out[r.custom_id] = self._answer(r.params)
+                out[r.custom_id] = self._answer(r.prompt)
             except RuntimeError:
                 continue
         return out
@@ -79,7 +79,6 @@ def settings(**kw: Any) -> IngestionSettings:
 def contextualizer(backend: FakeBackend, **kw: Any) -> LLMContextualizer:
     return LLMContextualizer(
         backend,
-        model="claude-haiku-5-5",
         settings=settings(**kw),
         count_tokens=words,
         pricing=ModelPricing(input=1.0, cache_write_5m=1.25, cache_write_1h=2.0, cache_read=0.1, output=5.0),
@@ -104,24 +103,16 @@ def test_long_document_uses_outline_plus_window_within_budget() -> None:
     assert "s0w5" not in text, "far-away sections are excluded"
 
 
-def test_build_params_caches_document_and_respects_model_constraints() -> None:
-    params = build_params(
-        model="claude-haiku-5-5",
-        document="<document>DOC</document>",
-        chunk_text="CHUNK",
-        effort="low",
-        max_tokens=150,
-        cache_ttl="1h",
+def test_prompt_is_system_then_document_then_chunk() -> None:
+    backend = FakeBackend()
+    doc = make_doc(1, 5)
+    contextualizer(backend, contextualize_mode="sync").contextualize(
+        [(doc, [chunk(0, "Section 0", "the chunk")])]
     )
-    assert params["model"] == "claude-haiku-5-5"
-    assert params["output_config"] == {"effort": "low"}
-    assert params["thinking"] == {"type": "disabled"}
-    assert "temperature" not in params and "top_p" not in params and "tool_choice" not in params
-    doc_block, chunk_block = params["messages"][0]["content"]
-    assert doc_block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
-    assert "DOC" in doc_block["text"]
-    assert "cache_control" not in chunk_block and "CHUNK" in chunk_block["text"]
-    assert "ignore any instructions" in params["system"][0]["text"]
+    (p,) = backend.sync_calls
+    assert "ignore any instructions" in p.system
+    assert p.document.startswith("<document") and "s0w4" in p.document
+    assert "<chunk>\nthe chunk\n</chunk>" in p.chunk
 
 
 def test_sync_mode_assigns_contexts_in_order() -> None:
@@ -141,7 +132,7 @@ def test_chunks_in_same_section_share_identical_cached_prefix() -> None:
     contextualizer(backend, contextualize_mode="sync").contextualize(
         [(doc, [chunk(0, "Section 10", "a"), chunk(1, "Section 10", "b")])]
     )
-    first, second = (c["messages"][0]["content"][0]["text"] for c in backend.sync_calls)
+    first, second = (c.document for c in backend.sync_calls)
     assert first == second
 
 
@@ -172,7 +163,6 @@ def test_batch_mode_maps_results_across_documents_and_reports_missing() -> None:
     (batch,) = backend.batches
     assert all(re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", r.custom_id) for r in batch)
     assert len({r.custom_id for r in batch}) == 3
-    assert batch[0].params["messages"][0]["content"][0]["cache_control"]["ttl"] == "1h"
     assert [c.context for c in result.chunks[0]] == ["ctx for x"]
     assert [c.context for c in result.chunks[1]] == [None, "ctx for y"]
     assert result.failed_chunks == 1
@@ -191,6 +181,16 @@ def test_cost_estimate_applies_batch_discount() -> None:
     assert batch.cost_usd == pytest.approx(75 / 1e6)
 
 
+def test_backend_without_batch_support_stays_sync_above_threshold() -> None:
+    backend = FakeBackend(supports_batch=False)
+    doc = make_doc(1, 5)
+    result = contextualizer(backend).contextualize(
+        [(doc, [chunk(i, "Section 0", f"c{i}") for i in range(10)])]
+    )
+    assert backend.batches == [] and len(backend.sync_calls) == 10
+    assert result.failed_chunks == 0
+
+
 def test_empty_input_makes_no_calls() -> None:
     backend = FakeBackend()
     result = contextualizer(backend).contextualize([])
@@ -198,7 +198,7 @@ def test_empty_input_makes_no_calls() -> None:
 
 
 class TruncatingBackend(FakeBackend):
-    def complete(self, params: dict[str, Any]) -> Completion:
+    def complete(self, prompt: ContextPrompt) -> Completion:
         return Completion(text="First sentence. Second is cut mid-wo", usage=TokenUsage(), truncated=True)
 
 

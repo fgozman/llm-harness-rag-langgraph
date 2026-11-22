@@ -1,5 +1,6 @@
-"""Real Anthropic calls. Needs ANTHROPIC_API_KEY in the repo .env; costs a fraction of a cent."""
+"""Real LLM calls (Anthropic: ANTHROPIC_API_KEY in the repo .env, fractions of a cent; Ollama: local)."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -51,3 +52,16 @@ def test_batch_contextualization_round_trip(settings: Settings) -> None:
     result = build_contextualizer(settings).contextualize([(doc, chunks[:2])])
     assert result.failed_chunks == 0
     assert all(c.context for c in result.chunks[0])
+
+
+@pytest.mark.ollama
+def test_ollama_contextualization(settings: Settings) -> None:
+    # Uses a locally pulled model; override with OLLAMA_TEST_MODEL (default llama3:latest).
+    model = os.environ.get("OLLAMA_TEST_MODEL", "llama3:latest")
+    llm = {"provider": "ollama", "cheap_model": model}
+    s = Settings.model_validate({**settings.model_dump(), "llm": llm})
+    doc, chunks = _doc_and_chunks(s)
+    result = build_contextualizer(s).contextualize([(doc, chunks[:3])])
+    assert result.failed_chunks == 0
+    assert all(c.context for c in result.chunks[0])
+    assert result.cost_usd == 0.0  # local model: no pricing

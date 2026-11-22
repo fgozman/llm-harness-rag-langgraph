@@ -1,37 +1,28 @@
 """Contextual retrieval: a short LLM-written blurb situating each chunk within its document.
 
 Each request = cached prefix (system + document or document window) + the varying chunk. Chunks of the same
-section share an identical prefix so prompt caching hits. Large runs go through the Message Batches API.
+section share an identical prefix so prompt caching hits. Provider specifics live in `context_backends`;
+large runs use a batch API when the backend has one (Anthropic Message Batches).
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from typing import Any, Literal, Protocol, cast
+from typing import Protocol
 
-import anthropic
-from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
-from anthropic.types.messages.batch_create_params import Request
-
-from rag.config import Effort, IngestionSettings, ModelPricing
+from rag.config import IngestionSettings, ModelPricing
 from rag.ingestion.models import Block, BlockKind, Chunk, ParsedDocument
 from rag.prompts import contextualize as prompt
 
 log = logging.getLogger(__name__)
 
-CacheTTL = Literal["5m", "1h"]
 TokenCounter = Callable[[str], int]
 
 # Above this many input tokens Haiku 5.5 switches to a 5x pricier tier.
 _PRICE_TIER_LIMIT = 100_000
-_BATCH_MAX_REQUESTS = 100_000
-# The API limit is 256 MB per batch; stay well below it.
-_BATCH_MAX_BYTES = 200 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,9 +55,18 @@ class Completion:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextPrompt:
+    """Provider-neutral prompt: a stable, cacheable prefix (system + document) and the varying chunk."""
+
+    system: str
+    document: str
+    chunk: str
+
+
+@dataclass(frozen=True, slots=True)
 class ContextRequest:
     custom_id: str
-    params: dict[str, Any]
+    prompt: ContextPrompt
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +85,10 @@ class Contextualizer(Protocol):
 
 
 class ContextBackend(Protocol):
-    def complete(self, params: dict[str, Any]) -> Completion: ...
+    @property
+    def supports_batch(self) -> bool: ...
+
+    def complete(self, prompt: ContextPrompt) -> Completion: ...
 
     def complete_batch(self, requests: Sequence[ContextRequest]) -> dict[str, Completion]:
         """Return completions by custom_id; failed/expired requests are simply absent."""
@@ -171,33 +174,6 @@ def document_context(
     return f"{outline}\n\n{window}", True
 
 
-def build_params(
-    *, model: str, document: str, chunk_text: str, effort: Effort, max_tokens: int, cache_ttl: CacheTTL
-) -> dict[str, Any]:
-    # No temperature/top_p/tool_choice: Claude 5.5 models reject non-default sampling params. Thinking is
-    # disabled (allowed at effort <= high) because a 1-2 sentence blurb gains nothing from it.
-    return {
-        "model": model,
-        "max_tokens": max_tokens,
-        "system": [{"type": "text", "text": prompt.SYSTEM}],
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": document,
-                        "cache_control": {"type": "ephemeral", "ttl": cache_ttl},
-                    },
-                    {"type": "text", "text": prompt.chunk_block(chunk_text)},
-                ],
-            }
-        ],
-        "output_config": {"effort": effort},
-        "thinking": {"type": "disabled"},
-    }
-
-
 # --- contextualizer --------------------------------------------------------------------------------
 
 
@@ -214,31 +190,33 @@ class LLMContextualizer:
         self,
         backend: ContextBackend,
         *,
-        model: str,
         settings: IngestionSettings,
         count_tokens: TokenCounter,
         pricing: ModelPricing | None,
     ) -> None:
         self._backend = backend
-        self._model = model
         self._settings = settings
         self._count_tokens = count_tokens
         self._pricing = pricing
+
+    @property
+    def backend(self) -> ContextBackend:
+        return self._backend
 
     def contextualize(self, docs: Sequence[tuple[ParsedDocument, list[Chunk]]]) -> ContextualizeResult:
         n_chunks = sum(len(chunks) for _, chunks in docs)
         if n_chunks == 0:
             return ContextualizeResult(chunks=[list(chunks) for _, chunks in docs])
         mode = self._settings.contextualize_mode
-        use_batch = mode == "batch" or (
+        wants_batch = mode == "batch" or (
             mode == "auto" and n_chunks >= self._settings.contextualize_batch_threshold
         )
-        # Batches can run longer than 5 minutes, so the 1h cache keeps shared prefixes alive across them.
-        jobs = self._jobs(docs, cache_ttl="1h" if use_batch else "5m")
+        use_batch = wants_batch and self._backend.supports_batch
+        jobs = self._jobs(docs)
         completions = self._run_batch(jobs) if use_batch else self._run_sync(jobs)
         return self._assemble(docs, jobs, completions, batch=use_batch)
 
-    def _jobs(self, docs: Sequence[tuple[ParsedDocument, list[Chunk]]], cache_ttl: CacheTTL) -> list[_Job]:
+    def _jobs(self, docs: Sequence[tuple[ParsedDocument, list[Chunk]]]) -> list[_Job]:
         budget = self._settings.contextualize_max_prompt_tokens
         jobs: list[_Job] = []
         prefixes: dict[tuple[int, tuple[str, ...]], str] = {}
@@ -250,15 +228,8 @@ class LLMContextualizer:
                     doc_budget = max(budget - chunk.token_count - 200, 1)
                     text, excerpt = document_context(doc, chunk.section_path, self._count_tokens, doc_budget)
                     prefixes[key] = prompt.document_block(doc.title, text, excerpt)
-                params = build_params(
-                    model=self._model,
-                    document=prefixes[key],
-                    chunk_text=chunk.text,
-                    effort=self._settings.contextualize_effort,
-                    max_tokens=self._settings.contextualize_max_output_tokens,
-                    cache_ttl=cache_ttl,
-                )
-                jobs.append(_Job(di, ci, ContextRequest(f"d{di}-c{ci}", params), key))
+                request_prompt = ContextPrompt(prompt.SYSTEM, prefixes[key], prompt.chunk_block(chunk.text))
+                jobs.append(_Job(di, ci, ContextRequest(f"d{di}-c{ci}", request_prompt), key))
         return jobs
 
     def _run_sync(self, jobs: list[_Job]) -> dict[str, Completion]:
@@ -279,7 +250,7 @@ class LLMContextualizer:
 
     def _safe_complete(self, job: _Job) -> tuple[str, Completion | None]:
         try:
-            return job.request.custom_id, self._backend.complete(job.request.params)
+            return job.request.custom_id, self._backend.complete(job.request.prompt)
         except Exception as exc:
             # One failed blurb shouldn't fail the file: the chunk is still indexed, just without context.
             log.warning("contextualization failed for %s: %s", job.request.custom_id, exc)
@@ -346,74 +317,3 @@ def _clean_context(completion: Completion) -> str:
         end = text.rfind(".")
         text = text[: end + 1] if end > 0 else text
     return text
-
-
-# --- Anthropic backend -----------------------------------------------------------------------------
-
-
-def _completion(message: anthropic.types.Message) -> Completion:
-    text = "".join(block.text for block in message.content if block.type == "text")
-    u = message.usage
-    created = u.cache_creation
-    return Completion(
-        text=text,
-        truncated=message.stop_reason == "max_tokens",
-        usage=TokenUsage(
-            input=u.input_tokens,
-            output=u.output_tokens,
-            cache_read=u.cache_read_input_tokens or 0,
-            cache_write_5m=created.ephemeral_5m_input_tokens
-            if created
-            else (u.cache_creation_input_tokens or 0),
-            cache_write_1h=created.ephemeral_1h_input_tokens if created else 0,
-        ),
-    )
-
-
-def _split_batches(requests: Sequence[ContextRequest]) -> list[list[ContextRequest]]:
-    batches: list[list[ContextRequest]] = [[]]
-    size = 0
-    for req in requests:
-        req_size = len(json.dumps(req.params))
-        if batches[-1] and (size + req_size > _BATCH_MAX_BYTES or len(batches[-1]) >= _BATCH_MAX_REQUESTS):
-            batches.append([])
-            size = 0
-        batches[-1].append(req)
-        size += req_size
-    return batches
-
-
-class AnthropicBackend:
-    def __init__(self, client: anthropic.Anthropic, *, poll_interval_s: float) -> None:
-        self._client = client
-        self._poll_interval_s = poll_interval_s
-
-    def complete(self, params: dict[str, Any]) -> Completion:
-        # Params are built as a plain dict (shared with the batch path), so pin the non-streaming overload.
-        message: anthropic.types.Message = self._client.messages.create(**params, stream=False)
-        return _completion(message)
-
-    def complete_batch(self, requests: Sequence[ContextRequest]) -> dict[str, Completion]:
-        batch_ids = [
-            self._client.messages.batches.create(
-                requests=[
-                    Request(custom_id=r.custom_id, params=cast(MessageCreateParamsNonStreaming, r.params))
-                    for r in group
-                ]
-            ).id
-            for group in _split_batches(requests)
-        ]
-        results: dict[str, Completion] = {}
-        for batch_id in batch_ids:
-            self._wait(batch_id)
-            for item in self._client.messages.batches.results(batch_id):
-                if item.result.type == "succeeded":
-                    results[item.custom_id] = _completion(item.result.message)
-                else:
-                    log.warning("batch request %s ended with %s", item.custom_id, item.result.type)
-        return results
-
-    def _wait(self, batch_id: str) -> None:
-        while self._client.messages.batches.retrieve(batch_id).processing_status != "ended":
-            log.info("waiting for contextualization batch %s", batch_id)
-            time.sleep(self._poll_interval_s)
