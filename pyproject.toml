@@ -7,17 +7,24 @@ authors = [
 ]
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "anthropic>=2.12.0",
     "arize-phoenix-otel>=0.17.3",
+    "docling>=2.151.1",
+    "fastembed>=0.9.1",
     "httpx>=0.28.1",
     "langchain-core>=1.8.4",
     "langgraph>=1.2.24",
     "openinference-instrumentation-langchain>=0.1.90",
     "pydantic>=2.14.4",
     "pydantic-settings>=2.16.3",
+    "pymupdf>=2.1",
     "pyyaml>=6.0.4",
     "qdrant-client>=1.20.0",
-    "rich>=15.0.0",
-    "typer>=0.29.2",
+    "rich>=14.0.0",
+    "sentence-transformers>=6.3.0",
+    "torch>=2.15.0",
+    "transformers>=5.24.0",
+    "typer>=0.19.0",
 ]
 
 [project.scripts]
@@ -29,9 +36,12 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "openpyxl>=3.1.5",
     "pyright>=1.1.414",
     "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
+    "python-docx>=1.2.0",
+    "python-pptx>=1.0.2",
     "ruff>=0.17.6",
 ]
 
@@ -42,7 +52,14 @@ src = ["src", "tests", "scripts", "eval"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "N", "PTH", "TID", "PL"]
-ignore = ["PLR2004"]  # magic-value comparisons are normal in tests and thresholds
+ignore = [
+    "PLR2004",  # magic-value comparisons are normal in tests and thresholds
+    "PLC0415",  # heavy deps (torch, docling, models) are imported lazily on purpose to keep the CLI fast
+]
+
+[tool.ruff.lint.pylint]
+# Pipeline components take their collaborators as keyword-only arguments (dependency injection).
+max-args = 10
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLR0913"]
@@ -50,6 +67,8 @@ ignore = ["PLR2004"]  # magic-value comparisons are normal in tests and threshol
 [tool.pyright]
 pythonVersion = "3.12"
 include = ["src", "tests"]
+# Fixture generator drives untyped office/PDF libraries; it is a dev script, not product code.
+exclude = ["tests/fixtures"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
@@ -57,6 +76,18 @@ venv = ".venv"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers -m 'not integration'"
+filterwarnings = [
+    # PyMuPDF's SWIG bindings trigger this on import; not actionable for us.
+    "ignore:builtin type (SwigPyPacked|SwigPyObject|swigvarlink) has no __module__ attribute:DeprecationWarning",
+]
 markers = [
     "integration: needs Qdrant, Phoenix, ML models, or an LLM API (run with `-m integration`)",
+    "slow: integration tests with unbounded latency, e.g. Message Batches (`-m slow`)",
+]
+
+[tool.uv]
+# Supported targets: Apple Silicon macOS and Linux (CUDA/CPU). Intel macOS has no current torch wheels.
+environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux'",
 ]

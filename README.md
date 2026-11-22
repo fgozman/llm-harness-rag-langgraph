@@ -17,6 +17,20 @@ uv run rag config         # show resolved settings (secrets masked)
 make check                # lint + strict types + unit tests
 ```
 
+## Indexing documents
+
+```bash
+uv run rag ingest                     # indexes ./data/docs (docs_dir)
+uv run rag ingest path/to/folder      # or any folder / single file
+uv run rag ingest --no-contextualize  # skip LLM contextual enrichment (no API key needed)
+uv run rag ingest --force             # re-index everything
+uv run rag ingest --retry-failed      # retry files that failed to parse earlier
+```
+
+Re-running is a no-op unless files changed: a SQLite manifest (`.rag/rag.db`) tracks content hashes.
+Changed files are re-indexed, deleted files have their chunks removed. Supported: PDF, DOCX, PPTX,
+XLSX, HTML, Markdown, TXT. First run downloads models (Qwen3-Embedding, Docling layout models).
+
 Embedding and reranking models run natively on the host (MPS on Apple Silicon, CUDA on Linux),
 not in Docker. Choose a profile with `HARDWARE_PROFILE=mac|gpu|cpu`.
 

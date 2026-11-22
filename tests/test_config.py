@@ -101,3 +101,11 @@ def test_profile_defaults_do_not_leak_between_instances(monkeypatch: pytest.Monk
     Settings()
     monkeypatch.setenv("HARDWARE_PROFILE", "mac")
     assert Settings().embedding.model == "Qwen/Qwen3-Embedding-0.6B"
+
+
+@pytest.mark.parametrize(("profile", "batch"), [("mac", 16), ("gpu", 64), ("cpu", 8)])
+def test_embedding_batch_size_comes_from_profile(
+    monkeypatch: pytest.MonkeyPatch, profile: str, batch: int
+) -> None:
+    monkeypatch.setenv("HARDWARE_PROFILE", profile)
+    assert Settings().embedding.batch_size == batch

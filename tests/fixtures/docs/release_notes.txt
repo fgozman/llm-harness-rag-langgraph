@@ -1,0 +1,12 @@
+Northwind Controller Firmware Release Notes
+
+Version 4.3.1
+Fixed a race condition that caused intermittent E-217 encoder faults on J4.
+Improved boot time from 38 s to 22 s.
+
+Version 4.3.0
+Added collision detection sensitivity levels 1 through 5.
+Deprecated the legacy Modbus RTU interface; it will be removed in 5.0.
+
+Version 4.2.0
+Introduced auto-tuning for joints J1 to J3.

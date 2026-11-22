@@ -15,7 +15,9 @@ llm:
   rewriting_effort: medium
 
 embedding:
-  batch_size: 32
+  # model and batch_size default from the hardware profile; set them here to override.
+  max_length: 8192
+  query_instruction: Given a question about a document collection, retrieve relevant passages that answer the question
 
 reranker:
   fallback_model: BAAI/bge-reranker-v2-m3
@@ -39,7 +41,14 @@ chunking:
 
 ingestion:
   contextualize: true
-  max_workers: 4
+  contextualize_mode: auto          # auto | batch | sync (auto = batch at >= threshold chunks)
+  contextualize_batch_threshold: 200
+  contextualize_concurrency: 4
+  contextualize_effort: low
+  contextualize_max_prompt_tokens: 70000   # local-tokenizer count; Haiku's price tier changes at 100K
+  window_files: 50
+  pdf_ocr: true
+  language: en
 
 graph:
   max_rewrite_retries: 2

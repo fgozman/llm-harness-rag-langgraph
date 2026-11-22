@@ -43,9 +43,11 @@ src/rag/
   config.py            settings (pydantic-settings: init > env > .env > config.yaml), hardware profiles
   cli.py               typer: config, doctor, ingest, search, ask, chat, eval, compare
   telemetry.py         Phoenix/OTel setup (Phase 4)
-  devices.py           device/dtype detection (Phase 1)
-  ingestion/           discovery, manifest, parsing, chunking, contextualize, indexing (Phase 1)
-  retrieval/           qdrant client, hybrid search, rrf, rerank, parent expansion, budget (Phase 2)
+  devices.py           device/dtype detection
+  embeddings.py        Qwen3 dense embedder, BM25 sparse embedder, token counter
+  factory.py           builds components from settings; models cached once per process
+  ingestion/           models, discovery, manifest (+parent docstore), parsing, chunking, contextualize, pipeline
+  retrieval/           types (shared protocols), qdrant_index; Phase 2 adds hybrid search, rrf, rerank, budget
   llm/                 provider factory, structured output helpers (Phase 3)
   prompts/             versioned prompts (Phase 3)
   graph/               state.py, nodes/, edges.py, build.py (Phase 3)
@@ -61,7 +63,7 @@ Subpackages are created in the phase that fills them (no empty stubs).
 
 - [x] **Phase 0 — Scaffolding**: uv project, ruff/pyright/pytest, config + profiles, docker-compose (Qdrant + Phoenix),
       `.env.example`, Makefile. Check: `docker compose up -d` healthy; pytest runs; lint + types clean.
-- [ ] **Phase 1 — Ingestion**: discovery, SQLite manifest (incremental, idempotent), Docling + fallback, structure-aware
+- [x] **Phase 1 — Ingestion**: discovery, SQLite manifest (incremental, idempotent), Docling + fallback, structure-aware
       chunking with parent/child, contextual enrichment flag, dense + sparse indexing. Test-first for manifest + chunker.
       Check: ingest fixtures; re-run no-op; modify one file → only it re-indexed; delete → chunks removed.
 - [ ] **Phase 2 — Retrieval**: hybrid + RRF, Qwen3 reranker (model-card usage), parent expansion, dedup, context budget,

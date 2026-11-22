@@ -34,6 +34,7 @@ class HardwareProfile(StrEnum):
 
 class _ProfileDefaults(BaseModel):
     embedding_model: str
+    embedding_batch_size: int
     reranker_model: str
     rerank_candidates: int
     dtype: DType
@@ -44,21 +45,49 @@ class _ProfileDefaults(BaseModel):
 PROFILE_DEFAULTS: dict[HardwareProfile, _ProfileDefaults] = {
     HardwareProfile.MAC: _ProfileDefaults(
         embedding_model="Qwen/Qwen3-Embedding-0.6B",
+        # Measured on M1 Max: ~10 chunks/s at 500 tokens for batch 8-64; 16 is peak speed at ~3 GiB.
+        embedding_batch_size=16,
         reranker_model="Qwen/Qwen3-Reranker-0.6B",
         rerank_candidates=25,
         dtype="float16",
     ),
     HardwareProfile.GPU: _ProfileDefaults(
         embedding_model="Qwen/Qwen3-Embedding-4B",
+        embedding_batch_size=64,
         reranker_model="Qwen/Qwen3-Reranker-4B",
         rerank_candidates=30,
         dtype="bfloat16",
     ),
     HardwareProfile.CPU: _ProfileDefaults(
         embedding_model="Qwen/Qwen3-Embedding-0.6B",
+        embedding_batch_size=8,
         reranker_model="BAAI/bge-reranker-v2-m3",
         rerank_candidates=20,
         dtype="float32",
+    ),
+}
+
+
+class ModelPricing(BaseModel):
+    """USD per million tokens; used only for cost estimates in run summaries."""
+
+    input: float
+    cache_write_5m: float
+    cache_write_1h: float
+    cache_read: float
+    output: float
+
+
+# Anthropic list prices (platform.claude.com pricing, checked 2026-11-22). Haiku: <=100K-token prompt tier.
+_DEFAULT_PRICING: dict[str, ModelPricing] = {
+    "claude-haiku-5-5": ModelPricing(
+        input=0.10, cache_write_5m=0.125, cache_write_1h=0.20, cache_read=0.01, output=0.50
+    ),
+    "claude-sonnet-5-5": ModelPricing(
+        input=2.0, cache_write_5m=2.50, cache_write_1h=4.0, cache_read=0.10, output=10.0
+    ),
+    "claude-opus-5-5": ModelPricing(
+        input=4.0, cache_write_5m=5.0, cache_write_1h=8.0, cache_read=0.20, output=20.0
     ),
 }
 
@@ -73,13 +102,18 @@ class LLMSettings(BaseModel):
     ollama_base_url: str = "http://localhost:11434"
     request_timeout_s: float = 120.0
     max_retries: int = 3
+    pricing: dict[str, ModelPricing] = Field(default_factory=lambda: dict(_DEFAULT_PRICING))
 
 
 class EmbeddingSettings(BaseModel):
     # None means "use the hardware profile default".
     model: str | None = None
-    batch_size: int = 32
+    batch_size: int | None = Field(default=None, ge=1)
     max_length: int = 8192
+    # Qwen3-Embedding format: "Instruct: {task}\nQuery:" prepended to queries only (per model card).
+    query_instruction: str = (
+        "Given a question about a document collection, retrieve relevant passages that answer the question"
+    )
 
 
 class RerankerSettings(BaseModel):
@@ -117,9 +151,20 @@ class ChunkingSettings(BaseModel):
 
 class IngestionSettings(BaseModel):
     contextualize: bool = True
-    max_workers: int = Field(default=4, ge=1)
+    # auto: Message Batches API (50% cheaper, async) for large runs, concurrent sync calls for small ones.
+    contextualize_mode: Literal["auto", "batch", "sync"] = "auto"
+    contextualize_batch_threshold: int = Field(default=200, ge=1)
+    contextualize_concurrency: int = Field(default=4, ge=1)
+    contextualize_effort: Effort = "low"
+    contextualize_max_output_tokens: int = Field(default=150, ge=16)
     # Spec: keep contextualization prompts under 100K tokens.
-    contextualize_max_prompt_tokens: int = Field(default=100_000, le=100_000)
+    # Measured with the local (Qwen) tokenizer, which can undercount vs Claude's, hence the margin.
+    contextualize_max_prompt_tokens: int = Field(default=70_000, le=100_000)
+    batch_poll_interval_s: float = Field(default=30.0, gt=0)
+    # Files are processed in windows so one huge run doesn't hold every chunk in memory at once.
+    window_files: int = Field(default=50, ge=1)
+    pdf_ocr: bool = True
+    language: str = "en"
 
 
 class GraphSettings(BaseModel):
@@ -169,6 +214,7 @@ class Settings(BaseSettings):
         # Fill only fields the user left unset, so explicit config always wins over the profile.
         prof = PROFILE_DEFAULTS[self.hardware_profile]
         self.embedding.model = self.embedding.model or prof.embedding_model
+        self.embedding.batch_size = self.embedding.batch_size or prof.embedding_batch_size
         self.reranker.model = self.reranker.model or prof.reranker_model
         self.reranker.candidates = self.reranker.candidates or prof.rerank_candidates
         self.dtype = self.dtype or prof.dtype
