@@ -6,25 +6,63 @@
 
 from __future__ import annotations
 
+import functools
 import sqlite3
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from openinference.instrumentation import using_attributes
+from openinference.instrumentation.langchain import LangChainInstrumentor, get_current_span
+from opentelemetry import trace
 
 from rag.graph.edges import route_after_analyze, route_after_check, route_after_generate, route_after_grade
 from rag.graph.nodes import GraphDeps, Nodes
 from rag.graph.state import STATE_MODELS, GraphState, Turn
+from rag.prompts import analyze, check, generate, grade, rewrite
+
+PROMPT_VERSIONS = {
+    "analyze": analyze.VERSION,
+    "rewrite": rewrite.VERSION,
+    "grade": grade.VERSION,
+    "generate": generate.VERSION,
+    "check": check.VERSION,
+}
 
 __all__ = ["GraphDeps", "build_checkpointer", "build_graph", "run_turn", "state_serializer"]
 
 EventCallback = Callable[[dict[str, Any]], None]
+
+
+class _NodeFn(Protocol):
+    def __call__(self, state: GraphState) -> dict[str, Any]: ...
+
+
+def _in_node_span(fn: _NodeFn) -> _NodeFn:
+    """Run a node with its LangChain-instrumented span as the active OTel span.
+
+    The instrumentor creates node spans from callbacks without activating them in the worker thread, so spans
+    opened inside the node (retriever, reranker, LLM SDK calls) would otherwise start new traces.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(state: GraphState) -> dict[str, Any]:
+        # Without instrumentation (tracing off / Phoenix down) there is no node span, and asking for it warns.
+        if not LangChainInstrumentor().is_instrumented_by_opentelemetry:
+            return fn(state)
+        node_span = get_current_span()
+        if node_span is None:
+            return fn(state)
+        with trace.use_span(node_span, end_on_exit=False):
+            return fn(state)
+
+    return wrapper
 
 
 def build_graph(
@@ -33,14 +71,17 @@ def build_graph(
     nodes = Nodes(deps)
     cfg = deps.settings
     graph = StateGraph(GraphState)
-    graph.add_node("analyze_query", nodes.analyze_query)
-    graph.add_node("rewrite_query", nodes.rewrite_query)
-    graph.add_node("retrieve", nodes.retrieve)
-    graph.add_node("rerank", nodes.rerank)
-    graph.add_node("grade_documents", nodes.grade_documents)
-    graph.add_node("generate", nodes.generate)
-    graph.add_node("check_answer", nodes.check_answer)
-    graph.add_node("respond", nodes.respond)
+    for name, fn in (
+        ("analyze_query", nodes.analyze_query),
+        ("rewrite_query", nodes.rewrite_query),
+        ("retrieve", nodes.retrieve),
+        ("rerank", nodes.rerank),
+        ("grade_documents", nodes.grade_documents),
+        ("generate", nodes.generate),
+        ("check_answer", nodes.check_answer),
+        ("respond", nodes.respond),
+    ):
+        graph.add_node(name, _in_node_span(fn))
 
     graph.add_edge(START, "analyze_query")
     graph.add_conditional_edges("analyze_query", route_after_analyze, ["rewrite_query", "respond"])
@@ -79,17 +120,28 @@ def build_checkpointer(path: Path) -> SqliteSaver:
 
 
 def run_turn(
-    graph: CompiledStateGraph[Any], question: str, *, thread_id: str, on_event: EventCallback | None = None
+    graph: CompiledStateGraph[Any],
+    question: str,
+    *,
+    thread_id: str,
+    on_event: EventCallback | None = None,
+    user_id: str = "",
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run one user turn on a thread; `on_event` receives status/token/final events as they happen."""
+    """Run one user turn on a thread; `on_event` receives status/token/final events as they happen.
+
+    Every span of the turn carries session.id = thread_id (Phoenix groups a conversation's turns by it).
+    """
     config: Any = {"configurable": {"thread_id": thread_id}}
     turn = {"question": question, "history": [Turn(role="user", content=question)]}
-    for mode, chunk in graph.stream(turn, config, stream_mode=["custom", "updates"]):
-        if on_event is None:
-            continue
-        if mode == "custom" and isinstance(chunk, dict):
-            on_event(chunk)
-        elif mode == "updates" and isinstance(chunk, dict):
-            for node in chunk:
-                on_event({"type": "node", "node": str(node)})
+    trace_metadata = {**(metadata or {}), "prompt_versions": PROMPT_VERSIONS}
+    with using_attributes(session_id=thread_id, user_id=user_id, metadata=trace_metadata):
+        for mode, chunk in graph.stream(turn, config, stream_mode=["custom", "updates"]):
+            if on_event is None:
+                continue
+            if mode == "custom" and isinstance(chunk, dict):
+                on_event(chunk)
+            elif mode == "updates" and isinstance(chunk, dict):
+                for node in chunk:
+                    on_event({"type": "node", "node": str(node)})
     return dict(graph.get_state(config).values)

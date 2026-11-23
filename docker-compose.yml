@@ -24,6 +24,11 @@ services:
       - "127.0.0.1:${PHOENIX_GRPC_PORT:-4317}:4317"  # OTLP/gRPC
     environment:
       PHOENIX_WORKING_DIR: /mnt/data
+      # Phoenix >= 22 requires auth whenever it binds to a non-loopback address, which a container must do.
+      # The port is published on 127.0.0.1 only (see ports), so local dev runs without auth by default.
+      # To enable auth: PHOENIX_ENABLE_AUTH=true in .env, PHOENIX_SECRET in a docker-compose.override.yml
+      # (Phoenix rejects an empty secret, so it can't default here), and PHOENIX__API_KEY for the app.
+      PHOENIX_ENABLE_AUTH: "${PHOENIX_ENABLE_AUTH:-false}"
     volumes:
       - phoenix_data:/mnt/data
     healthcheck:

@@ -39,6 +39,7 @@ class Qwen3Reranker:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         self._torch = torch
+        self.model_name = model_name
         self.device = devices.resolve_device(device)
         torch_dtype = devices.resolve_dtype(self.device, dtype)
         log.info("loading %s on %s (%s)", model_name, self.device, torch_dtype)
@@ -94,6 +95,7 @@ class CrossEncoderReranker:
         import torch
         from sentence_transformers import CrossEncoder
 
+        self.model_name = model_name
         self.device = devices.resolve_device(device)
         torch_dtype = devices.resolve_dtype(self.device, dtype)
         log.info("loading %s on %s (%s)", model_name, self.device, torch_dtype)

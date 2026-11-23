@@ -49,6 +49,8 @@ class FakeSearcher:
 class FakeReranker:
     """Scores a passage 1.0 if it mentions the favoured chunk id, else by reverse input position."""
 
+    model_name = "fake-reranker"
+
     def __init__(self, favour: str) -> None:
         self.favour = favour
         self.calls: list[tuple[str, list[str]]] = []

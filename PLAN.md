@@ -42,7 +42,7 @@ flowchart LR
 src/rag/
   config.py            settings (pydantic-settings: init > env > .env > config.yaml), hardware profiles
   cli.py               typer: config, doctor, ingest, search, ask, chat, eval, compare
-  telemetry.py         Phoenix/OTel setup (Phase 4)
+  telemetry.py         Phoenix/OTel setup, OpenInference span helpers
   devices.py           device/dtype detection
   embeddings.py        Qwen3 dense embedder, BM25 sparse embedder, token counter
   factory.py           builds components from settings; models cached once per process
@@ -72,7 +72,7 @@ Subpackages are created in the phase that fills them (no empty stubs).
 - [x] **Test corpus** (Section 2): `scripts/build_test_corpus.py` + `scripts/corpus_builder/` (GAO: highlights only).
 - [x] **Phase 3 — LangGraph pipeline**: all nodes, routing + loop caps (test-first w/ fake LLM), checkpointer, streaming,
       citations, `rag ask` / `rag chat`. One end-to-end integration test.
-- [ ] **Phase 4 — Phoenix tracing**: register(), manual RETRIEVER/RERANKER spans, session.id, token counts,
+- [x] **Phase 4 — Phoenix tracing**: register(), manual RETRIEVER/RERANKER spans, session.id, token counts,
       resilient when Phoenix is down.
 - [ ] **Phase 5 — Evaluation**: golden set, Phoenix dataset, experiments + evaluators, `rag eval [--no-retrieval]`,
       `rag compare`, leaky-question flagging, results summary.

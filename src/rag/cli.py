@@ -40,6 +40,26 @@ def _main(verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Debug l
             logging.getLogger(name).setLevel(logging.WARNING)
 
 
+def _start_tracing(settings: Settings) -> None:
+    from rag import telemetry
+
+    telemetry.init_tracing(settings.phoenix)
+
+
+def _trace_context(settings: Settings) -> tuple[str, dict[str, Any]]:
+    import getpass
+
+    user = settings.phoenix.user_id or getpass.getuser()
+    metadata = {
+        "interface": "cli",
+        "provider": settings.llm.provider,
+        "generation_model": settings.llm.generation_model,
+        "cheap_model": settings.llm.cheap_model,
+        "reranker": settings.reranker.model,
+    }
+    return user, metadata
+
+
 @app.command("config")
 def show_config() -> None:
     """Print the fully resolved settings (secrets masked)."""
@@ -96,6 +116,7 @@ def ingest(
     from rag.factory import ConfigurationError, build_ingestion_pipeline
 
     settings = get_settings()
+    _start_tracing(settings)
     if contextualize is not None:
         settings.ingestion.contextualize = contextualize
     root = (folder or settings.docs_dir).resolve()
@@ -177,7 +198,9 @@ def search(
         date_after=after.replace(tzinfo=UTC) if after else None,
         date_before=before.replace(tzinfo=UTC) if before else None,
     )
-    retriever = build_retriever(get_settings())
+    settings = get_settings()
+    _start_tracing(settings)
+    retriever = build_retriever(settings)
     result = retriever.retrieve(
         query,
         filters=None if filters.is_empty() else filters,
@@ -279,7 +302,7 @@ class _TurnPrinter:
             console.print(table)
 
 
-def _run_question(graph: Any, question: str, thread_id: str) -> None:
+def _run_question(graph: Any, question: str, thread_id: str, settings: Settings) -> None:
     import anthropic
     import openai
 
@@ -288,7 +311,10 @@ def _run_question(graph: Any, question: str, thread_id: str) -> None:
 
     printer = _TurnPrinter()
     try:
-        state = run_turn(graph, question, thread_id=thread_id, on_event=printer)
+        user, metadata = _trace_context(settings)
+        state = run_turn(
+            graph, question, thread_id=thread_id, on_event=printer, user_id=user, metadata=metadata
+        )
     except (LLMError, anthropic.APIError, openai.APIError) as exc:
         # Provider failures (refusals, truncation, HTTP errors after SDK retries) end the turn cleanly.
         printer.finish_stream()
@@ -301,11 +327,12 @@ def _run_question(graph: Any, question: str, thread_id: str) -> None:
     printer.finish(final)
 
 
-def _qa_graph() -> Any:
+def _qa_graph(settings: Settings) -> Any:
     from rag.factory import ConfigurationError, build_qa_graph
 
+    _start_tracing(settings)
     try:
-        return build_qa_graph(get_settings())
+        return build_qa_graph(settings)
     except ConfigurationError as exc:
         console.print(f"[red]Configuration error:[/red] {exc}")
         raise typer.Exit(code=2) from exc
@@ -320,7 +347,8 @@ def ask(
     import uuid
 
     thread = thread_id or uuid.uuid4().hex
-    _run_question(_qa_graph(), question, thread)
+    settings = get_settings()
+    _run_question(_qa_graph(settings), question, thread, settings)
     console.print(f"[dim]thread: {thread}[/dim]")
 
 
@@ -332,7 +360,8 @@ def chat(
     import uuid
 
     thread = thread_id or uuid.uuid4().hex
-    graph = _qa_graph()
+    settings = get_settings()
+    graph = _qa_graph(settings)
     console.print(f"[dim]thread {thread} — empty line, 'exit' or Ctrl-D to quit[/dim]")
     while True:
         try:
@@ -342,4 +371,4 @@ def chat(
             break
         if question.lower() in ("", "exit", "quit"):
             break
-        _run_question(graph, question, thread)
+        _run_question(graph, question, thread, settings)

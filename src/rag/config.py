@@ -212,6 +212,10 @@ class PhoenixSettings(BaseModel):
     enabled: bool = True
     collector_endpoint: str = "http://localhost:6006"
     project_name: str = "rag"
+    # Recorded as user.id on traces; None = the OS user name.
+    user_id: str | None = None
+    # Needed only when Phoenix authentication is enabled.
+    api_key: SecretStr | None = None
 
 
 class ChunkingSettings(BaseModel):

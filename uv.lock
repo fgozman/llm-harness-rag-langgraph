@@ -88,6 +88,25 @@ wheels = [
 ]
 
 [[package]]
+name = "arize-phoenix-client"
+version = "3.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "certifi" },
+    { name = "httpx" },
+    { name = "openinference-instrumentation" },
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-sdk" },
+    { name = "tqdm" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2c/bb/2baef57a69187b85c00e57b0c439ad1836b634a36ff9dbe38ae3fe9bf43d/arize_phoenix_client-3.7.0.tar.gz", hash = "sha256:79e0e3f4351ff9a6fc30d05144adf9e17bb5ca07b7b0bbcb2a66dcf95d94f63b", size = 316341, upload-time = "2026-11-05T03:10:32.156Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bb/61/7a011a51ef9b515fccbdb4e72326b0c1bdae009089ce24e25c14853de9bb/arize_phoenix_client-3.7.0-py3-none-any.whl", hash = "sha256:20a39e524a124ea48a61a6619f2997b938e9fe36996cf686ab2624aadbc3899b", size = 272051, upload-time = "2026-11-05T03:10:30.296Z" },
+]
+
+[[package]]
 name = "arize-phoenix-otel"
 version = "0.17.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1414,6 +1433,24 @@ wheels = [
 ]
 
 [[package]]
+name = "openinference-instrumentation-anthropic"
+version = "3.3.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "openinference-instrumentation" },
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-semantic-conventions" },
+    { name = "typing-extensions" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f4/aa/df6455ff17a2159dba90cf99b0c5ff6816d4aa30a984c607a8df1a5086e0/openinference_instrumentation_anthropic-3.3.9.tar.gz", hash = "sha256:e8c70376d281563e372925e7928c03c4f71e085f6469828a0fad00ce11442a17", size = 29909, upload-time = "2026-11-21T20:14:04.936Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ba/17/ceb226f37dbe02115a35b20ec67c78ce8c90bf95ea1e9203abbe38aed49f/openinference_instrumentation_anthropic-3.3.9-py3-none-any.whl", hash = "sha256:70287b1d91cde10d7e2988630edce23c5b1f8191bd787d7117b9ed1faded102e", size = 34930, upload-time = "2026-11-21T20:14:02.559Z" },
+]
+
+[[package]]
 name = "openinference-instrumentation-langchain"
 version = "0.1.90"
 source = { registry = "https://pypi.org/simple" }
@@ -1428,6 +1465,25 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b9/96/f609f11f56191a692437e7218cb14f0df07110dfbba69d0fe0dd19078b11/openinference_instrumentation_langchain-0.1.90.tar.gz", hash = "sha256:85082fe58d9a761bad9bd012722906501e5f6b3370084b61c8b590f32ce56cdb", size = 81443, upload-time = "2026-11-21T20:14:06.57Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/98/1a/c5a6a769e1ec15b598f1475f884def98e393bf60adac10d35003efb6e0c6/openinference_instrumentation_langchain-0.1.90-py3-none-any.whl", hash = "sha256:4efd6146e97b2bf1811f83a45e4b002bb5c4eae326a31c961ceda4eabe2a08eb", size = 25491, upload-time = "2026-11-21T20:14:04.169Z" },
+]
+
+[[package]]
+name = "openinference-instrumentation-openai"
+version = "0.1.77"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "openinference-instrumentation" },
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-semantic-conventions" },
+    { name = "typing-extensions" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/80/6a/0d221a6ee5fd6983c5ad4c171de4d5e5a8efa52d2b139c0102522e96c898/openinference_instrumentation_openai-0.1.77.tar.gz", hash = "sha256:fa92e43e86fba032a3d5747499cc1f3f479b5eeee1e75345bcbf985fb6cda7eb", size = 31252, upload-time = "2026-11-21T20:14:08.224Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d4/85/e98838cad51a92d759989f4d625e1994d8381ec80e444ee4811475382a73/openinference_instrumentation_openai-0.1.77-py3-none-any.whl", hash = "sha256:9ed63a20336ce1e3578addf495b3355ef316fae4d0d914893e69c3e04a3163e0", size = 38952, upload-time = "2026-11-21T20:14:07.138Z" },
 ]
 
 [[package]]
@@ -2052,6 +2108,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "arize-phoenix-client" },
     { name = "arize-phoenix-otel" },
     { name = "docling" },
     { name = "fastembed" },
@@ -2060,7 +2117,9 @@ dependencies = [
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
     { name = "openai" },
+    { name = "openinference-instrumentation-anthropic" },
     { name = "openinference-instrumentation-langchain" },
+    { name = "openinference-instrumentation-openai" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pymupdf" },
@@ -2087,6 +2146,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=2.12.0" },
+    { name = "arize-phoenix-client", specifier = ">=3.7.0" },
     { name = "arize-phoenix-otel", specifier = ">=0.17.3" },
     { name = "docling", specifier = ">=2.151.1" },
     { name = "fastembed", specifier = ">=0.9.1" },
@@ -2095,7 +2155,9 @@ requires-dist = [
     { name = "langgraph", specifier = ">=1.2.24" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.3" },
     { name = "openai", specifier = ">=3.57.0" },
+    { name = "openinference-instrumentation-anthropic", specifier = ">=3.3.9" },
     { name = "openinference-instrumentation-langchain", specifier = ">=0.1.90" },
+    { name = "openinference-instrumentation-openai", specifier = ">=0.1.77" },
     { name = "pydantic", specifier = ">=2.14.4" },
     { name = "pydantic-settings", specifier = ">=2.16.3" },
     { name = "pymupdf", specifier = ">=2.1" },

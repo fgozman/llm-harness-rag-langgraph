@@ -12,8 +12,54 @@ Read `SPEC.md` and `PLAN.md` first after any context reset.
 | Test corpus (Section 2) | ✅ built (97 docs, incl. 10 full GAO PDFs); golden Q&A set is Phase 5 |
 | 2 — Retrieval | ✅ done (2026-11-23) |
 | 3 — LangGraph pipeline | ✅ done (2026-11-23) |
-| 4 — Phoenix tracing | ⏭ next |
-| 5–6 | not started |
+| 4 — Phoenix tracing | ✅ done (2026-11-23) |
+| 5 — Evaluation | ⏭ next |
+| 6 | not started |
+
+## Phase 4 — done
+
+`src/rag/telemetry.py` (`init_tracing`, `span`, `set_documents`), spans in `retrieval/retriever.py`,
+`ingestion/pipeline.py`, graph node wrapper + session attributes in `graph/build.py`, CLI wiring (`ingest`,
+`search`, `ask`, `chat`). Added `openinference-instrumentation-anthropic` 3.3.9 / `-openai` 0.1.77,
+`arize-phoenix-client` 3.7.0.
+
+Acceptance (executed against the running Phoenix, read back with the Phoenix client):
+- `rag ask` → one trace with all 8 graph nodes (per-node latency), `hybrid_search` RETRIEVER span under the
+  `retrieve` node with 20 documents (id, score, content, metadata JSON), `rrf_fusion` under it,
+  `rerank_passages` RERANKER span under `rerank` (model, query, top_k, 20 input / 6 output documents),
+  `build_context`, and 5 LLM spans with model names + prompt/completion token counts under their nodes
+  (Haiku: analyze/rewrite/grade/check; Sonnet `messages.stream`: generate).
+- `rag chat` turns: separate traces sharing `session.id` = thread id; `user.id` = OS user (or
+  `PHOENIX__USER_ID`); root metadata has interface, provider, models, reranker and all prompt versions.
+- Ingestion: `ingest` → per-file `parse`/`chunk`/`embed`/`index` spans + `contextualize` with its 20 LLM calls
+  nested (counts as nested `attributes.rag.ingest.*`).
+- Phoenix stopped / unreachable: one warning, answer unchanged, no slowdown (17.8 s with Phoenix stopped).
+- Tests: `tests/test_telemetry.py` (init: disabled / unreachable / reachable / api key; OpenInference
+  attributes; node spans + session + nesting; ingestion spans; thread-pool context propagation; no
+  instrumentor noise) and `tests/test_tracing_integration.py` (real `rag ask` subprocesses → Phoenix; Phoenix
+  down). `make check`: 280 unit tests.
+
+Decisions / findings:
+- **Phoenix 22 enables auth by default** whenever it binds to a non-loopback address (the container binds
+  `::`), so every span got HTTP 401 (contrary to the docs page; verified in `phoenix.config.auth_enabled_for_host`).
+  Compose now sets `PHOENIX_ENABLE_AUTH=${PHOENIX_ENABLE_AUTH:-false}` — safe because the port is published on
+  127.0.0.1 only. To enable auth: `PHOENIX_ENABLE_AUTH=true`, `PHOENIX_SECRET` via docker-compose.override.yml (an
+  empty secret makes Phoenix refuse to start), and `PHOENIX__API_KEY` for the app (passed to `register`).
+  (Phase 0's OTLP check had hit the *other* project's Phoenix on :6006, so this was only caught now.)
+- Startup probe of `/healthz` (0.5 s): if Phoenix is down, tracing is skipped for the run. Spike showed the
+  OTLP exporter otherwise blocks flushes ~6 s with retry spam. `OTEL_EXPORTER_OTLP_TIMEOUT=3`, exporter logger
+  at ERROR for mid-run outages.
+- LangChain instrumentation creates LangGraph node spans from callbacks without activating them in the node's
+  thread; nodes are wrapped to `trace.use_span(get_current_span())` so retriever/reranker/LLM spans nest (without
+  it they were separate root traces). The wrapper checks the instrumentor first (else openinference prints
+  "Missing `tracer`" per node).
+- Thread pools don't inherit contextvars: sync contextualization submits each job with `copy_context().run`,
+  otherwise its LLM calls were orphan root traces (found live: 20 orphans).
+- Manual span names avoid node names (`hybrid_search`, `rerank_passages`) to keep the tree readable.
+- Unit tests never export: conftest forces `PHOENIX__ENABLED=false` (another project's Phoenix may listen on
+  :6006); integration tests use project `rag-tests`.
+- Process lesson: three silent misses from scripted `str.replace` edits after the formatter rewrapped code
+  (`--force` passthrough, node wrapper, api_key). Code edits now use the edit tool, which fails loudly.
 
 ## Phase 3 — done
 
@@ -290,13 +336,15 @@ Phase 1:
   scripted edit silently missed the reformatted call; the pipeline-level test passed, nothing covered the CLI).
   Fixed, with a CLI test that pins flag passthrough (`--force`, `--retry-failed`).
 
-## Next (Phase 4 — Phoenix tracing)
+## Next (Phase 5 — Evaluation)
 
-- Verify `phoenix.otel.register` signature (arize-phoenix-otel 0.17.x) and OpenInference conventions for
-  RETRIEVER/RERANKER spans; LangChain/LangGraph auto-instrumentation covers graph nodes, but our LLM calls go
-  through native SDKs → add `openinference-instrumentation-anthropic` / `-openai` for LLM spans + token counts.
-- Manual spans: ingestion stages, Qdrant hybrid search, RRF, reranking; session.id = thread_id.
-- Must not break when Phoenix is down (Phoenix currently on port 6007 on this machine).
+- Golden set generation (`eval/golden.jsonl`, ~80 items incl. canary facts and unanswerables), human review step,
+  Phoenix dataset upload, experiments with evaluators (retrieval hit@k/MRR/NDCG, faithfulness, correctness,
+  relevance, citation support, abstention, latency/cost), `rag eval [--no-retrieval]` with leaky-question
+  flagging, `rag compare` (e.g. contextual enrichment on/off, reranker on/off, weighted RRF, top-k).
+- Verify arize-phoenix-client 3.7 datasets/experiments API and arize-phoenix-evals before coding.
+- Contextual enrichment of the test corpus is needed for the with/without comparison (Haiku batch cost estimate
+  first: ~8.7k chunks).
 
 ## Phase 2 notes (kept for reference)
 

@@ -62,6 +62,13 @@ uv run rag chat --thread-id <id>                        # resume a conversation 
 Answers cite passages inline as [1], [2] and list the file, page and section of each. If the documents don't
 contain the answer, the reply is "Not found in the documents." Text inside documents is treated as untrusted data.
 
+## Tracing (Phoenix)
+
+`make up` starts Phoenix (UI at http://localhost:6006, or the `PHOENIX_PORT` you set). Ingestion, search and
+question answering are traced automatically: every graph node, retriever and reranker spans with documents,
+and LLM calls with token counts; conversation turns are grouped by session (the thread id). If Phoenix is not
+running, tracing is skipped with one warning. Disable it with `PHOENIX__ENABLED=false`.
+
 ## Test corpus (post-cutoff documents for evaluation)
 
 ```bash

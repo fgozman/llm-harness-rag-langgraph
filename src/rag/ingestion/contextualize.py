@@ -7,6 +7,7 @@ large runs use a batch API when the backend has one (Anthropic Message Batches).
 
 from __future__ import annotations
 
+import contextvars
 import logging
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -243,7 +244,13 @@ class LLMContextualizer:
         results: dict[str, Completion] = {}
         with ThreadPoolExecutor(max_workers=self._settings.contextualize_concurrency) as pool:
             for wave in (first_wave, second_wave):
-                for custom_id, completion in pool.map(self._safe_complete, wave):
+                # Thread pools don't inherit contextvars; a per-job copy keeps the tracing context (LLM spans
+                # stay inside the ingest trace). One copy per job: a Context can't be entered concurrently.
+                futures = [
+                    pool.submit(contextvars.copy_context().run, self._safe_complete, job) for job in wave
+                ]
+                for future in futures:
+                    custom_id, completion = future.result()
                     if completion is not None:
                         results[custom_id] = completion
         return results

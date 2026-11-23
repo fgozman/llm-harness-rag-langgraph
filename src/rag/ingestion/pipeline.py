@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from rag import telemetry
 from rag.config import ChunkingSettings, IngestionSettings
 from rag.ingestion.chunking import TokenCounter, chunk_document
 from rag.ingestion.contextualize import Contextualizer
@@ -100,6 +101,16 @@ class IngestionPipeline:
         force: bool = False,
         progress: ProgressCallback | None = None,
     ) -> IngestStats:
+        with telemetry.span("ingest", "CHAIN", {"input.value": str(root)}) as current:
+            stats = self._run(root, retry_failed=retry_failed, force=force, progress=progress)
+            for key in ("discovered", "indexed", "unchanged", "failed", "removed", "chunks_written"):
+                current.set_attribute(f"rag.ingest.{key}", getattr(stats, key))
+            current.set_attribute("rag.ingest.llm_cost_usd", stats.llm_cost_usd)
+            return stats
+
+    def _run(
+        self, root: Path, *, retry_failed: bool, force: bool, progress: ProgressCallback | None
+    ) -> IngestStats:
         started = time.monotonic()
         stats = IngestStats()
         files = discover(root)
@@ -153,8 +164,14 @@ class IngestionPipeline:
         # Parse/chunk errors are per-file data problems: record them and keep going. Infrastructure errors
         # (embedder, Qdrant) are raised from _write and abort the run instead.
         try:
-            doc = self._parser.parse(file.path)
-            parents, chunks = chunk_document(doc, file.doc_id, self._count_tokens, self._chunking)
+            with telemetry.span("parse", "CHAIN", {"rag.file.path": str(file.path)}) as current:
+                doc = self._parser.parse(file.path)
+                current.set_attribute("rag.parser", doc.parser)
+                current.set_attribute("rag.blocks", len(doc.blocks))
+            with telemetry.span("chunk", "CHAIN", {"rag.file.path": str(file.path)}) as current:
+                parents, chunks = chunk_document(doc, file.doc_id, self._count_tokens, self._chunking)
+                current.set_attribute("rag.chunks", len(chunks))
+                current.set_attribute("rag.parents", len(parents))
         except Exception as exc:
             log.warning("failed to parse %s: %s", file.path, exc)
             error = f"{type(exc).__name__}: {exc}"
@@ -168,7 +185,12 @@ class IngestionPipeline:
 
     def _contextualize(self, prepared: list[_Prepared], stats: IngestStats) -> list[_Prepared]:
         assert self._contextualizer is not None
-        result = self._contextualizer.contextualize([(p.doc, p.chunks) for p in prepared])
+        with telemetry.span("contextualize", "CHAIN", {"rag.documents": len(prepared)}) as current:
+            result = self._contextualizer.contextualize([(p.doc, p.chunks) for p in prepared])
+            current.set_attribute("rag.contextualize.failed_chunks", result.failed_chunks)
+            current.set_attribute("rag.contextualize.cost_usd", result.cost_usd)
+            current.set_attribute("llm.token_count.prompt", result.input_tokens)
+            current.set_attribute("llm.token_count.completion", result.output_tokens)
         stats.llm_input_tokens += result.input_tokens
         stats.llm_output_tokens += result.output_tokens
         stats.llm_cache_read_tokens += result.cache_read_tokens
@@ -181,11 +203,16 @@ class IngestionPipeline:
         ]
 
     def _write(self, item: _Prepared) -> None:
-        points = self._embed(item)
-        # Delete-then-upsert keyed by doc_id makes re-runs idempotent even after a crash mid-file.
-        self._index.delete_doc(item.file.doc_id)
-        if points:
-            self._index.upsert(points)
+        path = {"rag.file.path": str(item.file.path)}
+        with telemetry.span("embed", "EMBEDDING", path) as current:
+            points = self._embed(item)
+            current.set_attribute("rag.chunks", len(points))
+        with telemetry.span("index", "CHAIN", path) as current:
+            # Delete-then-upsert keyed by doc_id makes re-runs idempotent even after a crash mid-file.
+            self._index.delete_doc(item.file.doc_id)
+            if points:
+                self._index.upsert(points)
+            current.set_attribute("rag.points", len(points))
         self._manifest.record_indexed(
             item.file,
             parser=item.doc.parser,
