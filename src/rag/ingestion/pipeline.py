@@ -14,7 +14,7 @@ from rag import telemetry
 from rag.config import ChunkingSettings, IngestionSettings
 from rag.ingestion.chunking import TokenCounter, chunk_document
 from rag.ingestion.contextualize import Contextualizer
-from rag.ingestion.dates import CONTENT_WINDOW_CHARS, DocumentDate, infer_document_date
+from rag.ingestion.dates import CONTENT_WINDOW_CHARS, DocumentDate, infer_document_date, metadata_date
 from rag.ingestion.discovery import DiscoveredFile, discover
 from rag.ingestion.manifest import Manifest
 from rag.ingestion.models import Chunk, ParentSection, ParsedDocument
@@ -161,8 +161,8 @@ class IngestionPipeline:
                 progress("indexed", 1)
 
     def _prepare(self, file: DiscoveredFile, stats: IngestStats) -> _Prepared | None:
-        # Parse/chunk errors are per-file data problems: record them and keep going. Infrastructure errors
-        # (embedder, Qdrant) are raised from _write and abort the run instead.
+        # Parse/chunk/dating errors are per-file data problems: record them and keep going. Infrastructure
+        # errors (embedder, Qdrant) are raised from _write and abort the run instead.
         try:
             with telemetry.span("parse", "CHAIN", {"rag.file.path": str(file.path)}) as current:
                 doc = self._parser.parse(file.path)
@@ -172,6 +172,15 @@ class IngestionPipeline:
                 parents, chunks = chunk_document(doc, file.doc_id, self._count_tokens, self._chunking)
                 current.set_attribute("rag.chunks", len(chunks))
                 current.set_attribute("rag.parents", len(parents))
+            # Inside the per-file error handling: the metadata fallback reads the file again, and a file whose
+            # metadata can't be read is as broken as an unparseable one.
+            doc_date = infer_document_date(
+                file.path.name,
+                _opening_text(doc),
+                file.mtime,
+                created=lambda: metadata_date(file.path),
+                numeric_order=self._ingestion.numeric_date_order,
+            )
         except Exception as exc:
             log.warning("failed to parse %s: %s", file.path, exc)
             error = f"{type(exc).__name__}: {exc}"
@@ -180,7 +189,6 @@ class IngestionPipeline:
             stats.failed += 1
             stats.failures[str(file.path)] = error
             return None
-        doc_date = infer_document_date(file.path.name, _opening_text(doc), file.mtime)
         return _Prepared(file, doc, parents, chunks, doc_date)
 
     def _contextualize(self, prepared: list[_Prepared], stats: IngestStats) -> list[_Prepared]:

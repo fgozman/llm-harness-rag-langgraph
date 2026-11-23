@@ -1,6 +1,7 @@
 """Scripted LLM and retriever fakes for graph and API tests (no network, deterministic)."""
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -121,13 +122,18 @@ def analysis(intent: str = "retrieval", reply: str | None = None) -> QueryAnalys
 
 
 def plan(
-    query: str = "standalone q", variants: Sequence[str] = ("variant",), file_names: Sequence[str] = ()
+    query: str = "standalone q",
+    variants: Sequence[str] = ("variant",),
+    file_names: Sequence[str] = (),
+    folder: str | None = None,
 ) -> QueryPlan:
     return QueryPlan(
         standalone_query=query,
         variants=list(variants),
         sub_questions=[],
-        filters=ExtractedFilters(file_names=list(file_names), folder=None, date_after=None, date_before=None),
+        filters=ExtractedFilters(
+            file_names=list(file_names), folder=folder, date_after=None, date_before=None
+        ),
     )
 
 
@@ -163,11 +169,12 @@ def bad(critique: str = "Fix the revenue number", supported: Sequence[SupportedC
 
 THREE = [chunk("a", "Revenue was 10."), chunk("b", "Unrelated."), chunk("c", "Costs were 4.")]
 SETTINGS = GraphSettings(max_rewrite_retries=2, max_regenerations=1, min_relevant_passages=2)
+DOCS_DIR = Path("/srv/docs")
 
 
 def make(llm: FakeLLM, retriever: FakeRetriever, settings: GraphSettings = SETTINGS) -> Any:
     return build_graph(
-        GraphDeps(llm=llm, retriever=retriever, settings=settings),
+        GraphDeps(llm=llm, retriever=retriever, settings=settings, docs_dir=DOCS_DIR),
         checkpointer=InMemorySaver(serde=state_serializer()),
     )
 

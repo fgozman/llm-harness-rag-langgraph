@@ -15,6 +15,25 @@ Read `SPEC.md` and `PLAN.md` first after any context reset.
 | 4 — Phoenix tracing | ✅ done (2026-11-23) |
 | 5 — Evaluation | ✅ done (2026-11-23) — golden set awaiting human review |
 | 6 — API + hardening | ✅ done (2026-11-23) |
+| LLM access via LangChain (provider-neutral) | ✅ done — live provider calls not re-verified yet |
+
+## LLM access via LangChain — done
+
+- All LLM calls (graph nodes, evaluation, contextualization) go through LangChain chat models built with
+  `init_chat_model`; no `anthropic`/`openai` SDK dependency in our code or core install. Provider integrations
+  are optional extras (`anthropic`, `openai`, `ollama`); any other LangChain provider works with explicit models.
+- Provider specifics are data, not code: `PROVIDER_PRESETS` (models, per-task options such as thinking off for
+  routing calls, the Ollama `num_predict` token-limit name, the Anthropic `cache_control` marker). Option names
+  a chat model doesn't define are rejected at build time (integrations would otherwise ignore them).
+- Errors: provider failures become `LLMError` at the boundary with the HTTP status (duck-typed `status_code`);
+  contextualization tolerates only transient ones (408/409/429/5xx). Truncation/refusal from LangChain's
+  `normalized_finish_reason`, or output tokens at the cap for integrations that don't set it (Ollama).
+- Dropped: Anthropic Message Batches (no provider-neutral batch API; was 50% cheaper for large enrichment runs),
+  OpenAI `prompt_cache_key`, the Ollama thinking-capability probe (presets send only `reasoning: false`, which
+  models without thinking accept). Settings removed: `contextualize_mode`, `contextualize_batch_threshold`,
+  `batch_poll_interval_s`, `contextualize_effort` (→ `contextualize_params`), `llm.ollama_base_url` /
+  `openai_base_url` (→ `llm.base_url`), `request_timeout_s` / `max_retries` (→ `llm.params`), task `effort` /
+  `thinking` (→ task `params`); stale keys fail validation.
 
 ## Phase 6 — done
 
@@ -496,4 +515,6 @@ Phase 1:
 ## Open questions
 
 1. OpenAI enrichment and the OpenAI QA path are untested against the live API (no `OPENAI_API_KEY`).
+2. After the LangChain switch, the integration suites (`make test-integration`) have not been re-run against live
+   Anthropic/Ollama.
 

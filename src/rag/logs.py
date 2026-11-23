@@ -10,7 +10,9 @@ import contextvars
 import json
 import logging
 import sys
+import traceback
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -31,7 +33,7 @@ _STANDARD_ATTRS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None)))
 
 NOISY_LOGGERS = (
     "httpx",
-    "httpx2",  # the anthropic/openai SDKs' HTTP stack: one INFO line per LLM call
+    "httpx2",  # HTTP stack of some provider SDKs behind LangChain: one INFO line per LLM call
     "httpcore",
     "docling",
     "sentence_transformers",
@@ -106,7 +108,15 @@ class _AbandonedNodeFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         exc = record.exc_info[1] if record.exc_info else None
-        return not (isinstance(exc, RuntimeError) and "after shutdown" in str(exc))
+        # Identified by where it was raised, not by its message: a plain RuntimeError from
+        # ThreadPoolExecutor.submit (BrokenThreadPool is a subclass, so `type(...) is` excludes it), with a
+        # LangGraph frame on the stack (only the graph's abandoned callbacks, not other executors).
+        if type(exc) is not RuntimeError or exc.__traceback__ is None:
+            return True
+        frames = [frame for frame, _ in traceback.walk_tb(exc.__traceback__)]
+        raised_by_submit = frames[-1].f_code is ThreadPoolExecutor.submit.__code__
+        from_langgraph = any(f.f_globals.get("__name__", "").startswith("langgraph.") for f in frames)
+        return not (raised_by_submit and from_langgraph)
 
 
 # Installed at import (the graph imports this module), so it applies to the CLI, the server and tests alike.

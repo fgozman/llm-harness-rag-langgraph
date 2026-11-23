@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 
 from graph_fakes import THREE, FakeLLM, FakeRetriever, analysis, grades, make, ok, plan
 from rag.cli import app
-from rag.llm.base import Message, TokenCallback
+from rag.llm.base import LLMError, Message, TokenCallback
 
 runner = CliRunner()
 
@@ -125,6 +125,29 @@ def test_ask_times_out_at_the_turn_deadline(monkeypatch: pytest.MonkeyPatch) -> 
     assert result.exit_code == 1
     assert "Timed out" in result.output
     assert time.monotonic() - started < 1.0
+
+
+class _FailOnceLLM(FakeLLM):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.failed = False
+
+    def generate(
+        self, task: Any, *, system: str, messages: Sequence[Message], on_token: TokenCallback | None = None
+    ) -> str:
+        if not self.failed:
+            self.failed = True
+            raise LLMError("generate: output truncated at max_tokens")
+        return super().generate(task, system=system, messages=messages, on_token=on_token)
+
+
+def test_chat_reports_a_failed_turn_and_continues(monkeypatch: pytest.MonkeyPatch) -> None:
+    turn = [analysis(), plan(), grades(True, False, True)]
+    _patch_graph(monkeypatch, _FailOnceLLM([*turn, *turn, ok()], ["Rev 10 [1]."]))
+    result = runner.invoke(app, ["chat"], input="What was revenue?\nWhat was revenue?\nexit\n")
+    assert result.exit_code == 0, result.output
+    assert "LLM error:" in result.output
+    assert "Rev 10 [1]." in result.output
 
 
 def test_serve_runs_uvicorn_without_its_own_logging(monkeypatch: pytest.MonkeyPatch) -> None:

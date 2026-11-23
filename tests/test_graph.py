@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from graph_fakes import (
+    DOCS_DIR,
     SETTINGS,
     THREE,
     FakeLLM,
@@ -188,6 +189,18 @@ def test_explicit_filters_are_applied_and_dropped_when_they_match_nothing() -> N
     assert state["filters_dropped"] is True
 
 
+@pytest.mark.parametrize(
+    ("folder", "expected"),
+    [("contracts", DOCS_DIR / "contracts"), ("/elsewhere/reports", Path("/elsewhere/reports"))],
+)
+def test_folder_filter_is_relative_to_docs_dir(folder: str, expected: Path) -> None:
+    llm = FakeLLM([analysis(), plan(folder=folder), grades(True, True, True), ok()], ["A [1]."])
+    retriever = FakeRetriever([THREE])
+    ask(make(llm, retriever), "q in that folder")
+    filters = retriever.searches[0][1]
+    assert filters is not None and filters.folder == expected.resolve()
+
+
 def test_query_variants_are_capped() -> None:
     many = plan(variants=[f"v{i}" for i in range(10)])
     llm = FakeLLM([analysis(), many, grades(True, True, True), ok()], ["A [1]."])
@@ -221,13 +234,23 @@ def test_sqlite_checkpointer_persists_threads_across_graph_instances(
     scripted = [analysis(), plan(), grades(True, True, True), ok()]
     db = tmp_path / "checkpoints.db"
     first = build_graph(
-        GraphDeps(llm=FakeLLM(scripted, ["One [1]."]), retriever=FakeRetriever([THREE]), settings=SETTINGS),
+        GraphDeps(
+            llm=FakeLLM(scripted, ["One [1]."]),
+            retriever=FakeRetriever([THREE]),
+            settings=SETTINGS,
+            docs_dir=DOCS_DIR,
+        ),
         checkpointer=build_checkpointer(db),
     )
     run_turn(first, "q1", thread_id="t")
     # A new process/graph sees the same conversation (e.g. `rag chat --thread-id t`).
     second = build_graph(
-        GraphDeps(llm=FakeLLM(scripted, ["Two [1]."]), retriever=FakeRetriever([THREE]), settings=SETTINGS),
+        GraphDeps(
+            llm=FakeLLM(scripted, ["Two [1]."]),
+            retriever=FakeRetriever([THREE]),
+            settings=SETTINGS,
+            docs_dir=DOCS_DIR,
+        ),
         checkpointer=build_checkpointer(db),
     )
     with caplog.at_level(logging.WARNING):

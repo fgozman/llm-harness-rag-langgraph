@@ -7,23 +7,21 @@ authors = [
 ]
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "anthropic>=2.12.0",
     "arize-phoenix-client>=3.7.0",
     "arize-phoenix-otel>=0.17.3",
     "docling>=2.151.1",
     "fastapi>=0.165.0",
     "fastembed>=0.9.1",
     "httpx>=0.28.1",
+    "langchain>=1.5.2",
     "langchain-core>=1.8.4",
     "langgraph>=1.2.24",
     "langgraph-checkpoint-sqlite>=3.1.3",
-    "openai>=3.57.0",
-    "openinference-instrumentation-anthropic>=3.3.9",
     "openinference-instrumentation-langchain>=0.1.90",
-    "openinference-instrumentation-openai>=0.1.77",
     "pydantic>=2.14.4",
     "pydantic-settings>=2.16.3",
     "pymupdf>=2.1",
+    "python-dotenv>=1.2.4",
     "pyyaml>=6.0.4",
     "qdrant-client>=1.20.0",
     "rich>=14.0.0",
@@ -36,6 +34,17 @@ dependencies = [
 
 [project.scripts]
 rag = "rag.cli:app"
+
+[project.optional-dependencies]
+anthropic = [
+    "langchain-anthropic>=1.7.12",
+]
+openai = [
+    "langchain-openai>=1.8.5",
+]
+ollama = [
+    "langchain-ollama>=1.2.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.13.0,<0.14.0"]
@@ -72,8 +81,6 @@ max-args = 10
 "tests/**" = ["PLR0913"]
 # Prompt text is prose; wrapping string literals at 110 columns only hurts readability.
 "src/rag/prompts/**" = ["E501"]
-# Verbatim provider wire-format payloads (SSE events, API JSON) are clearer unwrapped.
-"tests/test_llm.py" = ["E501"]
 
 [tool.pyright]
 pythonVersion = "3.12"
@@ -96,7 +103,6 @@ filterwarnings = [
 ]
 markers = [
     "integration: needs Qdrant, Phoenix, ML models, or an LLM API (run with `-m integration`)",
-    "slow: integration tests with unbounded latency, e.g. Message Batches (`-m slow`)",
     "ollama: needs a local Ollama server with a pulled model (`-m ollama`, model via OLLAMA_TEST_MODEL)",
 ]
 

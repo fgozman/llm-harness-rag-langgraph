@@ -3,8 +3,11 @@
 help:  ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
 
-install:  ## Create .venv and install all deps
-	uv sync
+# LangChain integrations to install (extras in pyproject.toml), e.g. `make install PROVIDERS="ollama openai"`.
+PROVIDERS ?= anthropic
+
+install:  ## Create .venv and install deps + the LLM provider integration(s) in PROVIDERS
+	uv sync $(foreach p,$(PROVIDERS),--extra $(p))
 
 up:  ## Start Qdrant + Phoenix and wait until healthy
 	docker compose up -d --wait

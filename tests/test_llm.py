@@ -2,16 +2,20 @@ import json
 from collections.abc import Iterator
 from typing import Any, Literal
 
-import anthropic
-import httpx2
-import openai
+import httpx
 import pytest
+from langchain_core.exceptions import (
+    ModelAuthenticationError,
+    ModelConnectionError,
+    ModelRateLimitError,
+    ModelTimeoutError,
+)
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from rag.config import TaskSettings
-from rag.llm.anthropic_llm import AnthropicLLM
+from chat_fakes import ScriptedChatModel, reply, usage
 from rag.llm.base import LLMError, Message, strict_json_schema
-from rag.llm.openai_llm import OllamaChatLLM, OpenAIResponsesLLM
+from rag.llm.chat_model import ChatModelLLM, TaskModel, provider_error
 from rag.llm.usage import METER, UsageMeter
 
 
@@ -27,39 +31,29 @@ class Out(BaseModel):
     items: list[Inner]
 
 
-MODELS = {"cheap": "cheap-model", "generation": "gen-model", "upgrade": "big-model"}
-TASKS = {
-    "grade": TaskSettings(model="cheap", effort="low", max_tokens=300, thinking=False),
-    "generate": TaskSettings(model="generation", max_tokens=900),
-}
 MESSAGES = [Message("user", "first"), Message("assistant", "reply"), Message("user", "question")]
 OUT_JSON = {"intent": "a", "note": None, "count": 2, "items": [{"claim": "c", "citations": [1]}]}
 
 
-class Recorder:
-    def __init__(self, responses: list[httpx2.Response]) -> None:
-        self.responses = responses
-        self.bodies: list[dict[str, Any]] = []
-
-    def __call__(self, request: httpx2.Request) -> httpx2.Response:
-        self.bodies.append(json.loads(request.content))
-        return self.responses.pop(0)
+def make_llm(chat: ScriptedChatModel, max_tokens: int = 300, **structured: Any) -> ChatModelLLM:
+    tasks = {
+        "grade": TaskModel(chat=chat, name="cheap-model", max_tokens=max_tokens),
+        "generate": TaskModel(chat=chat, name="gen-model", max_tokens=max_tokens),
+    }
+    return ChatModelLLM(tasks, structured_method="json_schema", structured_params=structured)
 
 
-def sse(events: list[tuple[str | None, dict[str, Any] | str]]) -> httpx2.Response:
-    lines: list[str] = []
-    for name, data in events:
-        if name:
-            lines.append(f"event: {name}")
-        lines.append(f"data: {data if isinstance(data, str) else json.dumps(data)}")
-        lines.append("")
-    return httpx2.Response(
-        200, headers={"content-type": "text/event-stream"}, content="\n".join(lines) + "\n"
-    )
+class StatusError(Exception):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
 
 
-def http(rec: Recorder) -> httpx2.Client:
-    return httpx2.Client(transport=httpx2.MockTransport(rec))
+@pytest.fixture
+def meter() -> Iterator[UsageMeter]:
+    METER.reset()
+    yield METER
+    METER.reset()
 
 
 # --- schema ----------------------------------------------------------------------------------------
@@ -77,243 +71,161 @@ def test_strict_schema_requires_everything_and_drops_unsupported_keywords() -> N
     assert {"type": "null"} in schema["properties"]["note"]["anyOf"]
 
 
-# --- Anthropic -------------------------------------------------------------------------------------
+# --- structured outputs ----------------------------------------------------------------------------
 
 
-def claude_message(text: str, stop: str = "end_turn") -> httpx2.Response:
-    return httpx2.Response(
-        200,
-        json={
-            "id": "m",
-            "type": "message",
-            "role": "assistant",
-            "model": "cheap-model",
-            "content": [
-                {"type": "thinking", "thinking": "hmm", "signature": "s"},
-                {"type": "text", "text": text},
-            ],
-            "stop_reason": stop,
-            "stop_sequence": None,
-            "usage": {"input_tokens": 1, "output_tokens": 1},
-        },
-    )
-
-
-def claude(rec: Recorder) -> AnthropicLLM:
-    return AnthropicLLM(anthropic.Anthropic(api_key="k", http_client=http(rec)), models=MODELS, tasks=TASKS)
-
-
-def test_anthropic_structured_uses_native_json_schema_and_task_settings() -> None:
-    rec = Recorder([claude_message(json.dumps(OUT_JSON))])
-    out = claude(rec).structured("grade", system="SYS", messages=MESSAGES, schema=Out)
+def test_structured_uses_native_schema_and_validates_the_result() -> None:
+    chat = ScriptedChatModel(replies=[reply(json.dumps(OUT_JSON))])
+    out = make_llm(chat, strict=True).structured("grade", system="S", messages=MESSAGES, schema=Out)
     assert out == Out.model_validate(OUT_JSON)
-    body = rec.bodies[0]
-    assert body["model"] == "cheap-model" and body["max_tokens"] == 300
-    assert body["system"] == [{"type": "text", "text": "SYS"}]
-    assert [m["role"] for m in body["messages"]] == ["user", "assistant", "user"]
-    assert body["output_config"]["effort"] == "low"
-    assert body["output_config"]["format"] == {"type": "json_schema", "schema": strict_json_schema(Out)}
-    assert body["thinking"] == {"type": "disabled"}
-    for forbidden in ("temperature", "top_p", "top_k", "tool_choice", "tools"):
-        assert forbidden not in body
-
-
-@pytest.mark.parametrize("stop", ["refusal", "max_tokens"])
-def test_anthropic_refusal_and_truncation_raise(stop: str) -> None:
-    with pytest.raises(LLMError):
-        claude(Recorder([claude_message("{}", stop)])).structured(
-            "grade", system="S", messages=MESSAGES, schema=Out
-        )
-
-
-def test_anthropic_schema_mismatch_raises() -> None:
-    with pytest.raises(LLMError, match="Out"):
-        claude(Recorder([claude_message('{"intent": "zzz"}')])).structured(
-            "grade", system="S", messages=MESSAGES, schema=Out
-        )
-
-
-def test_anthropic_generate_streams_tokens_and_leaves_thinking_to_the_model() -> None:
-    start: dict[str, Any] = {"type": "message", "id": "m", "role": "assistant", "model": "gen-model", "content": [],
-             "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 0}}  # fmt: skip
-    stream = sse(
-        [
-            ("message_start", {"type": "message_start", "message": start}),
-            ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
-            ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hel"}}),
-            ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "lo [1]"}}),
-            ("content_block_stop", {"type": "content_block_stop", "index": 0}),
-            ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 2}}),
-            ("message_stop", {"type": "message_stop"}),
-        ]
-    )  # fmt: skip
-    rec = Recorder([stream])
-    tokens: list[str] = []
-    text = claude(rec).generate("generate", system="S", messages=MESSAGES, on_token=tokens.append)
-    assert text == "Hello [1]" and tokens == ["Hel", "lo [1]"]
-    body = rec.bodies[0]
-    assert body["model"] == "gen-model" and body["stream"] is True
-    assert (
-        "thinking" not in body and "output_config" not in body
-    )  # model defaults (Sonnet can't disable thinking)
-
-
-# --- OpenAI Responses -------------------------------------------------------------------------------
-
-
-def oa_response(text: str, *, refusal: bool = False, status: str = "completed") -> dict[str, Any]:
-    content: dict[str, Any] = (
-        {"type": "refusal", "refusal": "no"}
-        if refusal
-        else {"type": "output_text", "text": text, "annotations": []}
-    )
-    return {
-        "id": "r", "object": "response", "created_at": 0, "status": status, "model": "cheap-model",
-        "output": [{"type": "message", "id": "o", "status": "completed", "role": "assistant", "content": [content]}],
-        "parallel_tool_calls": False, "tool_choice": "auto", "tools": [],
-        "incomplete_details": {"reason": "max_output_tokens"} if status == "incomplete" else None,
-    }  # fmt: skip
-
-
-def oai(rec: Recorder) -> OpenAIResponsesLLM:
-    return OpenAIResponsesLLM(openai.OpenAI(api_key="k", http_client=http(rec)), models=MODELS, tasks=TASKS)
-
-
-def test_openai_structured_uses_strict_text_format_without_storage() -> None:
-    rec = Recorder([httpx2.Response(200, json=oa_response(json.dumps(OUT_JSON)))])
-    out = oai(rec).structured("grade", system="SYS", messages=MESSAGES, schema=Out)
-    assert out.count == 2
-    body = rec.bodies[0]
-    assert body["input"][0] == {"role": "developer", "content": "SYS"}
-    assert body["text"]["format"] == {
-        "type": "json_schema",
-        "name": "Out",
+    (call,) = chat.structured_calls
+    assert call == {
         "schema": strict_json_schema(Out),
+        "include_raw": True,
+        "method": "json_schema",
         "strict": True,
     }
-    assert body["store"] is False and body["max_output_tokens"] == 300
-    assert body["reasoning"] == {"effort": "none"}  # thinking disabled for cheap routing calls
-    assert "temperature" not in body
+    (messages,) = chat.calls
+    assert [type(m) for m in messages] == [SystemMessage, HumanMessage, AIMessage, HumanMessage]
+    assert [m.text for m in messages] == ["S", "first", "reply", "question"]
 
 
-@pytest.mark.parametrize("kwargs", [{"refusal": True}, {"status": "incomplete"}])
-def test_openai_refusal_and_incomplete_raise(kwargs: dict[str, Any]) -> None:
-    rec = Recorder([httpx2.Response(200, json=oa_response("{}", **kwargs))])
-    with pytest.raises(LLMError):
-        oai(rec).structured("grade", system="S", messages=MESSAGES, schema=Out)
+@pytest.mark.parametrize(
+    ("message", "error"),
+    [
+        (reply("{}", finish="refusal"), "refused"),
+        (reply('{"intent": "a"', finish="length"), "truncated"),
+        (reply('{"intent": "a"', finish="content_filter"), "content_filter"),
+        (reply("not json"), "not valid JSON"),
+        (reply(json.dumps({**OUT_JSON, "intent": "zzz"})), "did not match Out"),
+        # No normalized finish reason (e.g. Ollama): output at the cap counts as truncation.
+        (reply(json.dumps(OUT_JSON), finish=None, usage=usage(5, 300)), "truncated"),
+    ],
+)
+def test_unusable_structured_outputs_raise(message: AIMessage, error: str) -> None:
+    llm = make_llm(ScriptedChatModel(replies=[message]))
+    with pytest.raises(LLMError, match=error):
+        llm.structured("grade", system="S", messages=MESSAGES, schema=Out)
 
 
-def test_openai_generate_streams_output_text_deltas() -> None:
-    events: list[tuple[str | None, dict[str, Any] | str]] = [
-        (None, {"type": "response.output_text.delta", "item_id": "o", "output_index": 0, "content_index": 0, "delta": "Hi", "sequence_number": 1, "logprobs": []}),
-        (None, {"type": "response.output_text.delta", "item_id": "o", "output_index": 0, "content_index": 0, "delta": " [2]", "sequence_number": 2, "logprobs": []}),
-        (None, {"type": "response.completed", "response": oa_response("Hi [2]"), "sequence_number": 3}),
-    ]  # fmt: skip
-    rec = Recorder([sse(events)])
+# --- streaming -------------------------------------------------------------------------------------
+
+
+def test_generate_streams_tokens_and_returns_the_answer() -> None:
+    chat = ScriptedChatModel(replies=[reply("Revenue was 10 [1].")])
     tokens: list[str] = []
-    assert oai(rec).generate("generate", system="S", messages=MESSAGES, on_token=tokens.append) == "Hi [2]"
-    assert tokens == ["Hi", " [2]"] and rec.bodies[0]["model"] == "gen-model"
+    text = make_llm(chat).generate("generate", system="S", messages=MESSAGES, on_token=tokens.append)
+    assert text == "Revenue was 10 [1]."
+    assert "".join(tokens) == text and len(tokens) > 1
 
 
-# --- Ollama (chat completions) -----------------------------------------------------------------------
+def test_generate_raises_when_the_answer_was_truncated() -> None:
+    chat = ScriptedChatModel(replies=[reply("Half an", finish="length")])
+    with pytest.raises(LLMError, match="truncated"):
+        make_llm(chat).generate("generate", system="S", messages=MESSAGES)
 
 
-def chunk(content: str | None, finish: str | None = None) -> dict[str, Any]:
-    delta = {"content": content} if content is not None else {}
-    return {"id": "c", "object": "chat.completion.chunk", "created": 0, "model": "m",
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}  # fmt: skip
+def test_errors_raised_by_the_token_callback_are_not_provider_errors() -> None:
+    # A cancelled turn aborts from on_token: that must propagate as-is, not become an LLM error.
+    class CancelledTurnError(Exception):
+        pass
+
+    def cancel(_: str) -> None:
+        raise CancelledTurnError
+
+    chat = ScriptedChatModel(replies=[reply("a b c")])
+    with pytest.raises(CancelledTurnError):
+        make_llm(chat).generate("generate", system="S", messages=MESSAGES, on_token=cancel)
 
 
-def ollama(rec: Recorder, *, thinking: bool = True) -> OllamaChatLLM:
-    client = openai.OpenAI(api_key="ollama", base_url="http://localhost:11434/v1/", http_client=http(rec))
-    return OllamaChatLLM(client, models=MODELS, tasks=TASKS, supports_thinking=lambda model: thinking)
+# --- provider errors -------------------------------------------------------------------------------
 
 
-def test_ollama_structured_uses_json_schema_response_format_and_disables_thinking() -> None:
-    completion = {"id": "c", "object": "chat.completion", "created": 0, "model": "m",
-                  "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": json.dumps(OUT_JSON)}}]}  # fmt: skip
-    rec = Recorder([httpx2.Response(200, json=completion)])
-    assert ollama(rec).structured("grade", system="SYS", messages=MESSAGES, schema=Out).intent == "a"
-    body = rec.bodies[0]
-    assert body["messages"][0] == {"role": "system", "content": "SYS"}
-    assert body["response_format"]["json_schema"]["schema"] == strict_json_schema(Out)
-    assert body["think"] is False
+@pytest.mark.parametrize(("status", "transient"), [(401, False), (404, False), (429, True), (503, True)])
+def test_provider_errors_keep_the_http_status(status: int, transient: bool) -> None:
+    chat = ScriptedChatModel(error=StatusError(status))
+    with pytest.raises(LLMError) as info:
+        make_llm(chat).structured("grade", system="S", messages=MESSAGES, schema=Out)
+    assert info.value.status_code == status and info.value.transient is transient
+    assert isinstance(info.value.__cause__, StatusError)
 
 
-def test_ollama_generate_streams_and_flags_truncation() -> None:
-    rec = Recorder([sse([(None, chunk("Hi")), (None, chunk(" there", "stop")), (None, "[DONE]")])])
-    tokens: list[str] = []
-    assert (
-        ollama(rec).generate("generate", system="S", messages=MESSAGES, on_token=tokens.append) == "Hi there"
-    )
-    assert tokens == ["Hi", " there"]
-    rec = Recorder([sse([(None, chunk("Hi", "length")), (None, "[DONE]")])])
-    with pytest.raises(LLMError):
-        ollama(rec).generate("generate", system="S", messages=MESSAGES)
+def test_streaming_provider_errors_are_translated() -> None:
+    chat = ScriptedChatModel(error=ConnectionError("refused"))
+    with pytest.raises(LLMError, match="ConnectionError: refused") as info:
+        make_llm(chat).generate("generate", system="S", messages=MESSAGES)
+    assert info.value.status_code is None and not info.value.transient
 
 
-def test_ollama_omits_thinking_params_for_models_without_thinking() -> None:
-    # Ollama rejects think/reasoning_effort with HTTP 400 for models like llama3 (observed live).
-    completion = {"id": "c", "object": "chat.completion", "created": 0, "model": "m",
-                  "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": json.dumps(OUT_JSON)}}]}  # fmt: skip
-    tasks = {**TASKS, "rewrite": TaskSettings(model="cheap", effort="medium")}
-    rec = Recorder([httpx2.Response(200, json=completion), httpx2.Response(200, json=completion)])
-    client = openai.OpenAI(api_key="ollama", base_url="http://localhost:11434/v1/", http_client=http(rec))
-    llm = OllamaChatLLM(client, models=MODELS, tasks=tasks, supports_thinking=lambda model: False)
-    llm.structured("grade", system="S", messages=MESSAGES, schema=Out)
-    llm.structured("rewrite", system="S", messages=MESSAGES, schema=Out)
-    for body in rec.bodies:
-        assert "think" not in body and "reasoning_effort" not in body
+def test_generate_raises_when_the_answer_was_content_filtered() -> None:
+    chat = ScriptedChatModel(replies=[reply("Partial", finish="content_filter")])
+    with pytest.raises(LLMError, match="content_filter"):
+        make_llm(chat).generate("generate", system="S", messages=MESSAGES)
 
 
-# --- usage accounting --------------------------------------------------------------------------------
+def test_non_provider_errors_propagate_unchanged() -> None:
+    # A bug (or an option the integration rejects) must not be reported as a provider outage.
+    llm = make_llm(ScriptedChatModel(error=TypeError("unexpected keyword argument")))
+    with pytest.raises(TypeError):
+        llm.structured("grade", system="S", messages=MESSAGES, schema=Out)
+    with pytest.raises(TypeError):
+        llm.generate("generate", system="S", messages=MESSAGES)
 
 
-@pytest.fixture
-def meter() -> Iterator[UsageMeter]:
-    METER.reset()
-    yield METER
-    METER.reset()
+def test_timeouts_are_transient_and_unreachable_providers_are_not() -> None:
+    request = httpx.Request("POST", "http://llm")
+
+    class SDKTimeoutError(Exception):  # SDKs re-raise httpx errors as their own types
+        pass
+
+    try:
+        raise SDKTimeoutError("timed out") from httpx.ReadTimeout("read", request=request)
+    except SDKTimeoutError as exc:
+        timeout = provider_error(exc)
+    assert timeout is not None and timeout.transient and timeout.status_code is None
+    unreachable = provider_error(httpx.ConnectError("refused", request=request))
+    assert unreachable is not None and not unreachable.transient
 
 
-def test_anthropic_calls_record_usage(meter: UsageMeter) -> None:
-    claude(Recorder([claude_message(json.dumps(OUT_JSON))])).structured(
-        "grade", system="S", messages=MESSAGES, schema=Out
-    )
-    usage = meter.snapshot()["cheap-model"]
-    assert (usage.calls, usage.input_tokens, usage.output_tokens) == (1, 1, 1)
+@pytest.mark.parametrize(
+    ("error", "transient"),
+    [
+        (ModelRateLimitError("slow down"), True),
+        (ModelTimeoutError("timed out"), True),
+        (ModelConnectionError("unreachable"), False),
+        (ModelAuthenticationError("bad key"), False),
+    ],
+)
+def test_langchain_model_errors_are_classified(error: Exception, transient: bool) -> None:
+    translated = provider_error(error)
+    assert translated is not None and translated.transient is transient
 
 
-def test_openai_calls_record_usage_with_cached_tokens_separated(meter: UsageMeter) -> None:
-    body = oa_response(json.dumps(OUT_JSON))
-    body["usage"] = {"input_tokens": 400, "input_tokens_details": {"cached_tokens": 300}, "output_tokens": 20,
-                     "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 420}  # fmt: skip
-    oai(Recorder([httpx2.Response(200, json=body)])).structured(
-        "grade", system="S", messages=MESSAGES, schema=Out
-    )
-    usage = meter.snapshot()["cheap-model"]
-    assert (usage.input_tokens, usage.cache_read_tokens, usage.output_tokens) == (100, 300, 20)
+def test_status_code_is_also_read_from_an_http_response() -> None:
+    class Response:
+        status_code = 500
+
+    class HTTPStyleError(Exception):
+        response: Any = Response()
+
+    error = provider_error(HTTPStyleError("boom"))
+    assert error is not None and error.status_code == 500
 
 
-def test_ollama_structured_and_streaming_record_usage(meter: UsageMeter) -> None:
-    completion = {"id": "c", "object": "chat.completion", "created": 0, "model": "m",
-                  "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": json.dumps(OUT_JSON)}}],
-                  "usage": {"prompt_tokens": 30, "completion_tokens": 7, "total_tokens": 37}}  # fmt: skip
-    last: dict[str, Any] = {
-        **chunk(None),
-        "choices": [],
-        "usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
-    }
-    rec = Recorder(
-        [
-            httpx2.Response(200, json=completion),
-            sse([(None, chunk("Hi", "stop")), (None, last), (None, "[DONE]")]),
+# --- usage -----------------------------------------------------------------------------------------
+
+
+def test_calls_record_usage_with_cached_tokens_separated(meter: UsageMeter) -> None:
+    chat = ScriptedChatModel(
+        replies=[
+            reply(json.dumps(OUT_JSON), usage=usage(400, 20, cache_read=300, cache_creation=50)),
+            reply("Hi there", usage=usage(12, 3)),
         ]
     )
-    llm = ollama(rec)
+    llm = make_llm(chat)
     llm.structured("grade", system="S", messages=MESSAGES, schema=Out)
     llm.generate("generate", system="S", messages=MESSAGES)
     snap = meter.snapshot()
-    assert (snap["cheap-model"].input_tokens, snap["cheap-model"].output_tokens) == (30, 7)
+    cheap = snap["cheap-model"]
+    assert (cheap.input_tokens, cheap.cache_read_tokens, cheap.cache_write_tokens) == (50, 300, 50)
     assert (snap["gen-model"].input_tokens, snap["gen-model"].output_tokens) == (12, 3)
-    assert rec.bodies[1]["stream_options"] == {"include_usage": True}

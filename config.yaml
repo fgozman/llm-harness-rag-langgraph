@@ -7,16 +7,25 @@ docs_dir: ./data/docs
 state_dir: ./.rag
 
 llm:
-  provider: anthropic        # anthropic | openai | ollama
-  # Models default per provider (anthropic: claude-sonnet-5-5 / claude-opus-5-5 / claude-haiku-5-5,
+  # Any LangChain chat-model provider (init_chat_model): anthropic | openai | ollama have presets (models and
+  # options below); others (google_genai, mistralai, bedrock_converse, ...) need the three models set.
+  # Install the provider's integration: `uv sync --extra anthropic` (or openai / ollama), or
+  # `uv add langchain-<provider>`. API keys come from its standard env var (ANTHROPIC_API_KEY, ...).
+  provider: anthropic
+  # Models default per provider preset (anthropic: claude-sonnet-5-5 / claude-opus-5-5 / claude-haiku-5-5,
   # openai: gpt-6.2-sol / gpt-6.2-astra / gpt-6-luna, ollama: qwen3:8b / qwen3:32b / qwen3:8b).
   # generation_model: claude-sonnet-5-5
   # upgrade_model: claude-opus-5-5
   # cheap_model: claude-haiku-5-5
-  ollama_base_url: http://localhost:11434
-  # Per-node model/effort (defaults in rag.config._default_tasks); override e.g.:
+  # base_url: http://localhost:11434   # endpoint override (Ollama host, OpenAI-compatible gateway, ...)
+  # Chat-model options for every call, in the integration's own names; merged over the preset's
+  # (timeouts/retries, OpenAI store: false, ...), so only the keys set here change:
+  # params: {timeout: 300}
+  # Per-task model role, output budget and options (defaults in rag.config._default_tasks and the provider
+  # preset); entries merge with the defaults, e.g.:
   # tasks:
   #   generate: {model: upgrade, max_tokens: 8192}
+  #   analyze: {params: {effort: low, thinking: {type: disabled}}}
 
 embedding:
   # model and batch_size default from the hardware profile; set them here to override.
@@ -54,14 +63,16 @@ chunking:
 
 ingestion:
   contextualize: true
-  contextualize_mode: auto          # auto | batch | sync (auto = batch at >= threshold chunks)
-  contextualize_batch_threshold: 200
   contextualize_concurrency: 4
-  contextualize_effort: low
+  # Chat-model options for contextualization (default: the provider preset's, thinking off), e.g.:
+  # contextualize_params: {effort: low, thinking: {type: disabled}}
   contextualize_max_prompt_tokens: 8000    # local-tokenizer count; must stay < 100K (Haiku price tier)
   window_files: 50
   pdf_ocr: true
   language: en
+  # Read all-numeric dates (05/06/2026) when dating documents: dmy | mdy. Unset = ambiguous, skipped.
+  # Applies to files (re)indexed afterwards: run `rag ingest --force` to re-date files already indexed.
+  # numeric_date_order: dmy
 
 graph:
   max_rewrite_retries: 2

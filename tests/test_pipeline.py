@@ -1,3 +1,4 @@
+import zipfile
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -18,7 +19,7 @@ class FakeParser:
 
     def parse(self, path: Path) -> ParsedDocument:
         self.calls.append(path)
-        text = path.read_text()
+        text = path.read_text(errors="replace")  # binary fixtures (DOCX) parse to noise, which is fine here
         if "CORRUPT" in text:
             raise ValueError("cannot parse")
         return ParsedDocument(
@@ -247,3 +248,29 @@ def test_document_date_prefers_name_then_content_then_mtime(h: Harness) -> None:
     assert dates["minutes_2026-03-15.md"] == ("2026-03-15", "name")
     assert dates["letter.md"] == ("2026-11-19", "content")
     assert dates["a.md"][1] == "mtime"
+
+
+def test_document_date_uses_docx_creation_date_before_mtime(h: Harness) -> None:
+    core = (
+        '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/'
+        'core-properties" xmlns:dcterms="http://purl.org/dc/terms/">'
+        "<dcterms:created>2026-10-12T09:00:00Z</dcterms:created></cp:coreProperties>"
+    )
+    # Deflated, as in real DOCX files: the fake parser reads raw bytes and must not see the date as text.
+    with zipfile.ZipFile(h.root / "memo.docx", "w", compression=zipfile.ZIP_DEFLATED) as package:
+        package.writestr("docProps/core.xml", core)
+    h.pipeline.run(h.root)
+    memo = [p.payload for p in h.index.points.values() if p.payload["file_name"] == "memo.docx"]
+    assert memo and {(m["doc_date"], m["doc_date_source"]) for m in memo} == {("2026-10-12", "metadata")}
+
+
+def test_unreadable_metadata_is_not_read_when_the_name_dates_the_file(h: Harness) -> None:
+    h.write("broken_2026-03-15.docx", "not a zip archive")
+    stats = h.pipeline.run(h.root)
+    assert stats.failed == 0 and stats.indexed == 3
+
+
+def test_unreadable_document_metadata_fails_the_file(h: Harness) -> None:
+    h.write("broken.docx", "not a zip archive")
+    stats = h.pipeline.run(h.root)
+    assert stats.failed == 1 and "BadZipFile" in stats.failures[str(h.root / "broken.docx")]

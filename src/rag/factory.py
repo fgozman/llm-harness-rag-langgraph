@@ -3,26 +3,25 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Mapping
 from functools import cache
-from typing import Any
+from typing import Any, cast
 
-import anthropic
-import httpx
-import openai
+from langchain.chat_models import init_chat_model
+from langchain_core.language_models import BaseChatModel
+from pydantic import AliasChoices
 from qdrant_client import QdrantClient
 
-from rag.config import Device, DType, Settings
+from rag.config import Device, DType, LLMSettings, Settings
 from rag.embeddings import Bm25SparseEmbedder, HFTokenCounter, QwenDenseEmbedder
 from rag.graph.build import GraphDeps, build_checkpointer, build_graph
-from rag.ingestion.context_backends import AnthropicBackend, OpenAIResponsesBackend
-from rag.ingestion.contextualize import ContextBackend, LLMContextualizer
+from rag.ingestion.context_backends import ChatModelContextBackend
+from rag.ingestion.contextualize import LLMContextualizer
 from rag.ingestion.manifest import Manifest
 from rag.ingestion.parsing import DocumentParser
 from rag.ingestion.pipeline import IngestionPipeline
-from rag.llm.anthropic_llm import AnthropicLLM
 from rag.llm.base import LLM
-from rag.llm.openai_llm import OllamaChatLLM, OpenAIResponsesLLM
+from rag.llm.chat_model import ChatModelLLM, TaskModel
 from rag.retrieval.qdrant_index import QdrantChunkIndex
 from rag.retrieval.qdrant_search import QdrantHybridSearcher
 from rag.retrieval.rerank import CrossEncoderReranker, Qwen3Reranker, is_qwen3_reranker
@@ -134,93 +133,66 @@ def build_manifest(settings: Settings) -> Manifest:
     return Manifest(settings.state_dir / "rag.db")
 
 
-def _anthropic_client(settings: Settings, purpose: str) -> anthropic.Anthropic:
-    if settings.anthropic_api_key is None:
-        raise ConfigurationError(f"ANTHROPIC_API_KEY is not set (needed for {purpose}).")
-    return anthropic.Anthropic(
-        api_key=settings.anthropic_api_key.get_secret_value(),
-        max_retries=settings.llm.max_retries,  # SDK retries 429/5xx with exponential backoff
-        timeout=settings.llm.request_timeout_s,
-    )
+def _accepted_params(chat_class: type[BaseChatModel]) -> set[str]:
+    names: set[str] = set()
+    for name, field in chat_class.model_fields.items():
+        names.add(name)
+        if field.alias:
+            names.add(field.alias)
+        aliases = field.validation_alias
+        if isinstance(aliases, str):
+            names.add(aliases)
+        elif isinstance(aliases, AliasChoices):
+            names.update(a for a in aliases.choices if isinstance(a, str))
+    return names
 
 
-def _openai_client(settings: Settings, purpose: str) -> openai.OpenAI:
-    if settings.openai_api_key is None:
-        raise ConfigurationError(f"OPENAI_API_KEY is not set (needed for {purpose}).")
-    return openai.OpenAI(
-        api_key=settings.openai_api_key.get_secret_value(),
-        base_url=settings.llm.openai_base_url,
-        max_retries=settings.llm.max_retries,
-        timeout=settings.llm.request_timeout_s,
-    )
-
-
-def _ollama_client(settings: Settings) -> openai.OpenAI:
-    return openai.OpenAI(
-        base_url=f"{settings.llm.ollama_base_url.rstrip('/')}/v1/",
-        api_key="ollama",  # required by the SDK, ignored by Ollama
-        max_retries=settings.llm.max_retries,
-        timeout=settings.llm.request_timeout_s,
-    )
-
-
-def _anthropic_context_backend(settings: Settings, model: str) -> AnthropicBackend:
-    effort = settings.ingestion.contextualize_effort or "low"
-    if effort in ("none", "minimal"):
-        raise ConfigurationError(f"Anthropic does not accept effort {effort!r}; use low, medium or high.")
-    client = _anthropic_client(settings, "contextual enrichment")
-    return AnthropicBackend(
-        client,
-        model=model,
-        effort=effort,
-        max_tokens=settings.ingestion.contextualize_max_output_tokens,
-        poll_interval_s=settings.ingestion.batch_poll_interval_s,
-    )
-
-
-def _openai_context_backend(settings: Settings, model: str) -> OpenAIResponsesBackend:
-    client = _openai_client(settings, "contextual enrichment with OpenAI")
-    return OpenAIResponsesBackend(
-        client,
-        model=model,
-        max_tokens=settings.ingestion.contextualize_max_output_tokens,
-        reasoning_effort=settings.ingestion.contextualize_effort or "none",
-        openai_platform=True,
-    )
-
-
-def _ollama_context_backend(settings: Settings, model: str) -> OpenAIResponsesBackend:
-    client = _ollama_client(settings)
-    effort = settings.ingestion.contextualize_effort
-    return OpenAIResponsesBackend(
-        client,
-        model=model,
-        max_tokens=settings.ingestion.contextualize_max_output_tokens,
-        reasoning_effort=effort,
-        # Thinking models (e.g. qwen3) would spend the small output budget on reasoning; Ollama's `think`
-        # extension turns it off unless the user explicitly asked for an effort level.
-        extra_body=None if effort else {"think": False},
-    )
+def build_chat_model(
+    llm: LLMSettings, model: str, *, max_tokens: int, params: Mapping[str, Any]
+) -> BaseChatModel:
+    """A LangChain chat model for `llm.provider` (any provider `init_chat_model` knows)."""
+    assert llm.max_tokens_param is not None  # filled from the provider preset
+    kwargs: dict[str, Any] = {**llm.params, **params, llm.max_tokens_param: max_tokens}
+    if llm.base_url:
+        kwargs["base_url"] = llm.base_url
+    try:
+        # With a fixed model (no configurable fields) init_chat_model returns the provider's chat model.
+        chat = cast(BaseChatModel, init_chat_model(model, model_provider=llm.provider, **kwargs))
+    except ImportError as exc:
+        raise ConfigurationError(
+            f"LLM provider {llm.provider!r} needs its LangChain integration package ({exc}). "
+            "Install it, e.g. `uv sync --extra anthropic|openai|ollama` or `uv add langchain-<provider>`."
+        ) from exc
+    except ValueError as exc:  # unknown provider, invalid option values
+        raise ConfigurationError(f"cannot configure {llm.provider} model {model!r}: {exc}") from exc
+    # Integrations ignore (or forward to the API) options they don't define: a typo or another provider's
+    # option name must fail here, not silently change behaviour.
+    unknown = sorted(set(kwargs) - _accepted_params(type(chat)))
+    if unknown:
+        raise ConfigurationError(
+            f"{type(chat).__name__} does not accept {', '.join(unknown)} (check llm.params, "
+            "llm.tasks.<task>.params, ingestion.contextualize_params, llm.max_tokens_param)"
+        )
+    return chat
 
 
 def build_contextualizer(settings: Settings) -> LLMContextualizer:
-    llm = settings.llm
-    assert llm.cheap_model is not None and settings.embedding.model is not None  # filled by validators
-    backend: ContextBackend
-    if llm.provider == "anthropic":
-        backend = _anthropic_context_backend(settings, llm.cheap_model)
-    elif llm.provider == "openai":
-        backend = _openai_context_backend(settings, llm.cheap_model)
-    else:
-        backend = _ollama_context_backend(settings, llm.cheap_model)
-    if settings.ingestion.contextualize_mode == "batch" and not backend.supports_batch:
-        raise ConfigurationError(
-            f"contextualize_mode=batch is only supported with Anthropic; {llm.provider} runs synchronously. "
-            "Use contextualize_mode=auto or sync."
-        )
+    llm, ingestion = settings.llm, settings.ingestion
+    # Filled by validators.
+    assert llm.cheap_model is not None and settings.embedding.model is not None
+    assert ingestion.contextualize_params is not None and llm.prompt_cache_marker is not None
+    chat = build_chat_model(
+        llm,
+        llm.cheap_model,
+        max_tokens=ingestion.contextualize_max_output_tokens,
+        params=ingestion.contextualize_params,
+    )
+    backend = ChatModelContextBackend(
+        chat, max_tokens=ingestion.contextualize_max_output_tokens, cache_marker=llm.prompt_cache_marker
+    )
     return LLMContextualizer(
         backend,
-        settings=settings.ingestion,
+        settings=ingestion,
         count_tokens=token_counter(settings.embedding.model),
         pricing=llm.pricing.get(llm.cheap_model),
     )
@@ -242,40 +214,29 @@ def build_ingestion_pipeline(settings: Settings) -> IngestionPipeline:
     )
 
 
-def _ollama_thinking_support(settings: Settings) -> Callable[[str], bool]:
-    base = settings.llm.ollama_base_url.rstrip("/")
-
-    @cache
-    def supports(model: str) -> bool:
-        # /api/show lists model capabilities (e.g. ["completion", "thinking"]).
-        try:
-            info = httpx.post(f"{base}/api/show", json={"model": model}, timeout=10).json()
-        except (httpx.HTTPError, ValueError):
-            return False  # unknown: sending thinking params could fail the request, omitting them can't
-        return "thinking" in info.get("capabilities", [])
-
-    return supports
-
-
 def build_llm(settings: Settings) -> LLM:
     llm = settings.llm
-    assert llm.cheap_model and llm.generation_model and llm.upgrade_model  # filled per provider
-    models = {"cheap": llm.cheap_model, "generation": llm.generation_model, "upgrade": llm.upgrade_model}
-    if llm.provider == "anthropic":
-        return AnthropicLLM(_anthropic_client(settings, "question answering"), models=models, tasks=llm.tasks)
-    if llm.provider == "openai":
-        return OpenAIResponsesLLM(
-            _openai_client(settings, "question answering"), models=models, tasks=llm.tasks
-        )
-    return OllamaChatLLM(
-        _ollama_client(settings),
-        models=models,
-        tasks=llm.tasks,
-        supports_thinking=_ollama_thinking_support(settings),
+    assert llm.cheap_model and llm.generation_model and llm.upgrade_model  # filled from the provider preset
+    names = {"cheap": llm.cheap_model, "generation": llm.generation_model, "upgrade": llm.upgrade_model}
+    tasks: dict[str, TaskModel] = {}
+    for task, cfg in llm.tasks.items():
+        assert cfg.params is not None  # filled from the provider preset
+        name = names[cfg.model]
+        chat = build_chat_model(llm, name, max_tokens=cfg.max_tokens, params=cfg.params)
+        tasks[task] = TaskModel(chat=chat, name=name, max_tokens=cfg.max_tokens)
+    return ChatModelLLM(
+        tasks,
+        structured_method=llm.structured_output_method,
+        structured_params=llm.structured_output_params,
     )
 
 
 def build_qa_graph(settings: Settings) -> Any:
     """The compiled LangGraph pipeline with a SQLite checkpointer (conversation memory per thread_id)."""
-    deps = GraphDeps(llm=build_llm(settings), retriever=build_retriever(settings), settings=settings.graph)
+    deps = GraphDeps(
+        llm=build_llm(settings),
+        retriever=build_retriever(settings),
+        settings=settings.graph,
+        docs_dir=settings.docs_dir,
+    )
     return build_graph(deps, checkpointer=build_checkpointer(settings.state_dir / "checkpoints.db"))

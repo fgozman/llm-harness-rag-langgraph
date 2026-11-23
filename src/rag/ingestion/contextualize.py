@@ -1,8 +1,8 @@
 """Contextual retrieval: a short LLM-written blurb situating each chunk within its document.
 
 Each request = cached prefix (system + document or document window) + the varying chunk. Chunks of the same
-section share an identical prefix so prompt caching hits. Provider specifics live in `context_backends`;
-large runs use a batch API when the backend has one (Anthropic Message Batches).
+section share an identical prefix so prompt caching hits. The chat model behind it is any LangChain
+provider (see `context_backends`).
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from typing import Protocol
 
 from rag.config import IngestionSettings, ModelPricing
 from rag.ingestion.models import Block, BlockKind, Chunk, ParsedDocument
+from rag.llm.base import LLMError
 from rag.prompts import contextualize as prompt
 
 log = logging.getLogger(__name__)
@@ -31,21 +32,19 @@ class TokenUsage:
     input: int = 0
     output: int = 0
     cache_read: int = 0
-    cache_write_5m: int = 0
-    cache_write_1h: int = 0
+    cache_write: int = 0
 
     def __add__(self, other: TokenUsage) -> TokenUsage:
         return TokenUsage(
             self.input + other.input,
             self.output + other.output,
             self.cache_read + other.cache_read,
-            self.cache_write_5m + other.cache_write_5m,
-            self.cache_write_1h + other.cache_write_1h,
+            self.cache_write + other.cache_write,
         )
 
     @property
     def prompt_total(self) -> int:
-        return self.input + self.cache_read + self.cache_write_5m + self.cache_write_1h
+        return self.input + self.cache_read + self.cache_write
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,14 +85,7 @@ class Contextualizer(Protocol):
 
 
 class ContextBackend(Protocol):
-    @property
-    def supports_batch(self) -> bool: ...
-
     def complete(self, prompt: ContextPrompt) -> Completion: ...
-
-    def complete_batch(self, requests: Sequence[ContextRequest]) -> dict[str, Completion]:
-        """Return completions by custom_id; failed/expired requests are simply absent."""
-        ...
 
 
 # --- document context ------------------------------------------------------------------------------
@@ -208,14 +200,8 @@ class LLMContextualizer:
         n_chunks = sum(len(chunks) for _, chunks in docs)
         if n_chunks == 0:
             return ContextualizeResult(chunks=[list(chunks) for _, chunks in docs])
-        mode = self._settings.contextualize_mode
-        wants_batch = mode == "batch" or (
-            mode == "auto" and n_chunks >= self._settings.contextualize_batch_threshold
-        )
-        use_batch = wants_batch and self._backend.supports_batch
         jobs = self._jobs(docs)
-        completions = self._run_batch(jobs) if use_batch else self._run_sync(jobs)
-        return self._assemble(docs, jobs, completions, batch=use_batch)
+        return self._assemble(docs, jobs, self._run(jobs))
 
     def _jobs(self, docs: Sequence[tuple[ParsedDocument, list[Chunk]]]) -> list[_Job]:
         budget = self._settings.contextualize_max_prompt_tokens
@@ -233,7 +219,7 @@ class LLMContextualizer:
                 jobs.append(_Job(di, ci, ContextRequest(f"d{di}-c{ci}", request_prompt), key))
         return jobs
 
-    def _run_sync(self, jobs: list[_Job]) -> dict[str, Completion]:
+    def _run(self, jobs: list[_Job]) -> dict[str, Completion]:
         # Send one request per shared prefix first so it writes the cache; the rest then read from it.
         primers: dict[tuple[int, tuple[str, ...]], _Job] = {}
         for job in jobs:
@@ -242,7 +228,8 @@ class LLMContextualizer:
         primer_ids = {j.request.custom_id for j in first_wave}
         second_wave = [j for j in jobs if j.request.custom_id not in primer_ids]
         results: dict[str, Completion] = {}
-        with ThreadPoolExecutor(max_workers=self._settings.contextualize_concurrency) as pool:
+        pool = ThreadPoolExecutor(max_workers=self._settings.contextualize_concurrency)
+        try:
             for wave in (first_wave, second_wave):
                 # Thread pools don't inherit contextvars; a per-job copy keeps the tracing context (LLM spans
                 # stay inside the ingest trace). One copy per job: a Context can't be entered concurrently.
@@ -253,30 +240,29 @@ class LLMContextualizer:
                     custom_id, completion = future.result()
                     if completion is not None:
                         results[custom_id] = completion
+        finally:
+            # After a fatal error, don't send the requests still queued (they would all fail).
+            pool.shutdown(cancel_futures=True)
         return results
 
     def _safe_complete(self, job: _Job) -> tuple[str, Completion | None]:
         try:
             return job.request.custom_id, self._backend.complete(job.request.prompt)
-        except Exception as exc:
-            # One failed blurb shouldn't fail the file: the chunk is still indexed, just without context.
+        except LLMError as exc:
+            if not exc.transient:
+                # Bad key/model/request, provider unreachable: fail the run instead of indexing every chunk
+                # without context (the manifest would mark those files as done, never to be contextualized).
+                raise
+            # A rate limit/server error/timeout that outlasted the integration's retries shouldn't fail the
+            # file: the chunk is still indexed, just without context.
             log.warning("contextualization failed for %s: %s", job.request.custom_id, exc)
             return job.request.custom_id, None
-
-    def _run_batch(self, jobs: list[_Job]) -> dict[str, Completion]:
-        try:
-            return self._backend.complete_batch([j.request for j in jobs])
-        except Exception as exc:
-            log.warning("contextualization batch failed: %s", exc)
-            return {}
 
     def _assemble(
         self,
         docs: Sequence[tuple[ParsedDocument, list[Chunk]]],
         jobs: list[_Job],
         completions: dict[str, Completion],
-        *,
-        batch: bool,
     ) -> ContextualizeResult:
         out = [list(chunks) for _, chunks in docs]
         usage = TokenUsage()
@@ -298,23 +284,22 @@ class LLMContextualizer:
             input_tokens=usage.input,
             output_tokens=usage.output,
             cache_read_tokens=usage.cache_read,
-            cache_write_tokens=usage.cache_write_5m + usage.cache_write_1h,
+            cache_write_tokens=usage.cache_write,
             failed_chunks=failed,
-            cost_usd=self._cost(usage, batch=batch),
+            cost_usd=self._cost(usage),
         )
 
-    def _cost(self, usage: TokenUsage, *, batch: bool) -> float:
+    def _cost(self, usage: TokenUsage) -> float:
         if self._pricing is None:
             return 0.0
         p = self._pricing
-        dollars = (
+        # Cache writes at the 5-minute rate: the cache marker requests the default TTL.
+        return (
             usage.input * p.input
             + usage.output * p.output
             + usage.cache_read * p.cache_read
-            + usage.cache_write_5m * p.cache_write_5m
-            + usage.cache_write_1h * p.cache_write_1h
+            + usage.cache_write * p.cache_write_5m
         ) / 1_000_000
-        return dollars * (0.5 if batch else 1.0)
 
 
 def _clean_context(completion: Completion) -> str:

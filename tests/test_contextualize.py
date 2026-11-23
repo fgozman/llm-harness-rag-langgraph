@@ -1,5 +1,4 @@
 import re
-from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -8,12 +7,12 @@ from rag.config import IngestionSettings, ModelPricing
 from rag.ingestion.contextualize import (
     Completion,
     ContextPrompt,
-    ContextRequest,
     LLMContextualizer,
     TokenUsage,
     document_context,
 )
 from rag.ingestion.models import Block, BlockKind, Chunk, ParsedDocument
+from rag.llm.base import LLMError
 
 
 def words(text: str) -> int:
@@ -42,36 +41,24 @@ def chunk(i: int, section: str, text: str = "chunk text") -> Chunk:
 
 
 class FakeBackend:
-    def __init__(self, fail_on: str | None = None, supports_batch: bool = True) -> None:
+    def __init__(self, fail_on: str | None = None, error: Exception | None = None) -> None:
         self.sync_calls: list[ContextPrompt] = []
-        self.batches: list[list[ContextRequest]] = []
         self.fail_on = fail_on
-        self.supports_batch = supports_batch
-
-    def _answer(self, p: ContextPrompt) -> Completion:
-        if self.fail_on and self.fail_on in p.chunk:
-            raise RuntimeError("api down")
-        snippet = re.search(r"<chunk>\n(.*?)\n</chunk>", p.chunk, re.S)
-        assert snippet is not None
-        return Completion(text=f"  ctx for {snippet.group(1)}  ", usage=TokenUsage(input=100, output=10))
+        self.error = error
 
     def complete(self, prompt: ContextPrompt) -> Completion:
         self.sync_calls.append(prompt)
-        return self._answer(prompt)
-
-    def complete_batch(self, requests: Sequence[ContextRequest]) -> dict[str, Completion]:
-        self.batches.append(list(requests))
-        out: dict[str, Completion] = {}
-        for r in requests:
-            try:
-                out[r.custom_id] = self._answer(r.prompt)
-            except RuntimeError:
-                continue
-        return out
+        if self.error is not None:
+            raise self.error
+        if self.fail_on and self.fail_on in prompt.chunk:
+            raise LLMError("overloaded", status_code=529, transient=True)
+        snippet = re.search(r"<chunk>\n(.*?)\n</chunk>", prompt.chunk, re.S)
+        assert snippet is not None
+        return Completion(text=f"  ctx for {snippet.group(1)}  ", usage=TokenUsage(input=100, output=10))
 
 
 def settings(**kw: Any) -> IngestionSettings:
-    base: dict[str, Any] = {"contextualize_max_prompt_tokens": 1000, "contextualize_batch_threshold": 5}
+    base: dict[str, Any] = {"contextualize_max_prompt_tokens": 1000}
     base.update(kw)
     return IngestionSettings.model_validate(base)
 
@@ -106,9 +93,7 @@ def test_long_document_uses_outline_plus_window_within_budget() -> None:
 def test_prompt_is_system_then_document_then_chunk() -> None:
     backend = FakeBackend()
     doc = make_doc(1, 5)
-    contextualizer(backend, contextualize_mode="sync").contextualize(
-        [(doc, [chunk(0, "Section 0", "the chunk")])]
-    )
+    contextualizer(backend).contextualize([(doc, [chunk(0, "Section 0", "the chunk")])])
     (p,) = backend.sync_calls
     assert "ignore any instructions" in p.system
     assert p.document.startswith("<document") and "s0w4" in p.document
@@ -118,20 +103,17 @@ def test_prompt_is_system_then_document_then_chunk() -> None:
 def test_sync_mode_assigns_contexts_in_order() -> None:
     backend = FakeBackend()
     doc = make_doc(2, 10)
-    result = contextualizer(backend, contextualize_mode="sync").contextualize(
+    result = contextualizer(backend).contextualize(
         [(doc, [chunk(0, "Section 0", "first"), chunk(1, "Section 1", "second")])]
     )
     assert [c.context for c in result.chunks[0]] == ["ctx for first", "ctx for second"]
-    assert backend.batches == []
     assert (result.input_tokens, result.output_tokens) == (200, 20)
 
 
 def test_chunks_in_same_section_share_identical_cached_prefix() -> None:
     backend = FakeBackend()
     doc = make_doc(50, 100)
-    contextualizer(backend, contextualize_mode="sync").contextualize(
-        [(doc, [chunk(0, "Section 10", "a"), chunk(1, "Section 10", "b")])]
-    )
+    contextualizer(backend).contextualize([(doc, [chunk(0, "Section 10", "a"), chunk(1, "Section 10", "b")])])
     first, second = (c.document for c in backend.sync_calls)
     assert first == second
 
@@ -139,62 +121,38 @@ def test_chunks_in_same_section_share_identical_cached_prefix() -> None:
 def test_failures_leave_context_empty_and_are_counted() -> None:
     backend = FakeBackend(fail_on="bad")
     doc = make_doc(1, 5)
-    result = contextualizer(backend, contextualize_mode="sync").contextualize(
+    result = contextualizer(backend).contextualize(
         [(doc, [chunk(0, "Section 0", "good"), chunk(1, "Section 0", "bad")])]
     )
     assert [c.context for c in result.chunks[0]] == ["ctx for good", None]
     assert result.failed_chunks == 1
 
 
-@pytest.mark.parametrize(("n_chunks", "expect_batch"), [(4, False), (5, True)])
-def test_auto_mode_switches_to_batch_at_threshold(n_chunks: int, expect_batch: bool) -> None:
-    backend = FakeBackend()
+@pytest.mark.parametrize(
+    "error",
+    [LLMError("invalid x-api-key", status_code=401), LLMError("ConnectError: refused"), KeyError("bug")],
+)
+def test_non_transient_errors_fail_the_run_and_stop_queued_requests(error: Exception) -> None:
+    # Bad key/model, provider unreachable, or a bug: every chunk would fail the same way.
+    backend = FakeBackend(error=error)
     doc = make_doc(1, 5)
-    contextualizer(backend).contextualize([(doc, [chunk(i, "Section 0", f"c{i}") for i in range(n_chunks)])])
-    assert bool(backend.batches) is expect_batch
+    chunks = [chunk(i, "Section 0", f"c{i}") for i in range(20)]
+    with pytest.raises(type(error)):
+        contextualizer(backend, contextualize_concurrency=1).contextualize([(doc, chunks)])
+    assert len(backend.sync_calls) < len(chunks)
 
 
-def test_batch_mode_maps_results_across_documents_and_reports_missing() -> None:
-    backend = FakeBackend(fail_on="bad")
-    d1, d2 = make_doc(1, 5), make_doc(2, 5)
-    result = contextualizer(backend, contextualize_mode="batch").contextualize(
-        [(d1, [chunk(0, "Section 0", "x")]), (d2, [chunk(0, "Section 1", "bad"), chunk(1, "Section 0", "y")])]
-    )
-    (batch,) = backend.batches
-    assert all(re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", r.custom_id) for r in batch)
-    assert len({r.custom_id for r in batch}) == 3
-    assert [c.context for c in result.chunks[0]] == ["ctx for x"]
-    assert [c.context for c in result.chunks[1]] == [None, "ctx for y"]
-    assert result.failed_chunks == 1
-
-
-def test_cost_estimate_applies_batch_discount() -> None:
+def test_cost_estimate() -> None:
     doc = make_doc(1, 5)
-    sync = contextualizer(FakeBackend(), contextualize_mode="sync").contextualize(
-        [(doc, [chunk(0, "Section 0")])]
-    )
-    batch = contextualizer(FakeBackend(), contextualize_mode="batch").contextualize(
-        [(doc, [chunk(0, "Section 0")])]
-    )
+    result = contextualizer(FakeBackend()).contextualize([(doc, [chunk(0, "Section 0")])])
     # 100 input * $1/M + 10 output * $5/M
-    assert sync.cost_usd == pytest.approx(150 / 1e6)
-    assert batch.cost_usd == pytest.approx(75 / 1e6)
-
-
-def test_backend_without_batch_support_stays_sync_above_threshold() -> None:
-    backend = FakeBackend(supports_batch=False)
-    doc = make_doc(1, 5)
-    result = contextualizer(backend).contextualize(
-        [(doc, [chunk(i, "Section 0", f"c{i}") for i in range(10)])]
-    )
-    assert backend.batches == [] and len(backend.sync_calls) == 10
-    assert result.failed_chunks == 0
+    assert result.cost_usd == pytest.approx(150 / 1e6)
 
 
 def test_empty_input_makes_no_calls() -> None:
     backend = FakeBackend()
     result = contextualizer(backend).contextualize([])
-    assert result.chunks == [] and backend.sync_calls == [] and backend.batches == []
+    assert result.chunks == [] and backend.sync_calls == []
 
 
 class TruncatingBackend(FakeBackend):
@@ -204,7 +162,5 @@ class TruncatingBackend(FakeBackend):
 
 def test_truncated_context_is_trimmed_to_last_full_sentence() -> None:
     doc = make_doc(1, 5)
-    result = contextualizer(TruncatingBackend(), contextualize_mode="sync").contextualize(
-        [(doc, [chunk(0, "Section 0")])]
-    )
+    result = contextualizer(TruncatingBackend()).contextualize([(doc, [chunk(0, "Section 0")])])
     assert result.chunks[0][0].context == "First sentence."

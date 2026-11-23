@@ -867,6 +867,34 @@ wheels = [
 ]
 
 [[package]]
+name = "langchain"
+version = "1.5.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "langchain-core" },
+    { name = "langgraph" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c7/bb/91eb9b4e4de6a1dd013148d31b2b0ce67bd8e32783ff639216263088cdd0/langchain-1.5.2.tar.gz", hash = "sha256:63816aee7f55503db5c4f266a0874047d417957ae70cbf27397325c584982c52", size = 723460, upload-time = "2026-11-18T22:30:30.058Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/41/dd5a3e54341c15671ab220c3f1706bd3b73c68e34bc7856782df81b873bc/langchain-1.5.2-py3-none-any.whl", hash = "sha256:e6c2df67337cae4f13b93460e586084ad8c7c7cfd540d27e2572a96308747a7c", size = 176594, upload-time = "2026-11-18T22:30:28.626Z" },
+]
+
+[[package]]
+name = "langchain-anthropic"
+version = "1.7.12"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anthropic" },
+    { name = "langchain-core" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cc/67/55c6fdcd7d569327cf0ff0687c510afa1d2ed790e58bf34cece4a039f56d/langchain_anthropic-1.7.12.tar.gz", hash = "sha256:63a330696a06e44b5c347dcd9cafb52dbf9acd840c447cd0ec8298518e3b9d3e", size = 748744, upload-time = "2026-11-19T23:00:07.796Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/e5/9361ac7db1987efda0ee3f81b28b0c48997076fa20470ffa8b6e124956fd/langchain_anthropic-1.7.12-py3-none-any.whl", hash = "sha256:61a50b98484c919b43a11d476b089494feab92d5aecfeb405969ae99e2c25a43", size = 66965, upload-time = "2026-11-19T23:00:06.677Z" },
+]
+
+[[package]]
 name = "langchain-core"
 version = "1.8.4"
 source = { registry = "https://pypi.org/simple" }
@@ -886,6 +914,34 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/75/ba/281e953ec491deda5c9ef8633b47647c41836c6b6fe1395e9d99567dbb44/langchain_core-1.8.4.tar.gz", hash = "sha256:af8976d6df0b3338dc7c830ebf1c505c0fc05a0e3eb564f4901ed7546a418ab6", size = 1025230, upload-time = "2026-11-19T22:35:43.367Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/16/6d/35b048329e70492ca0d7561431627ac3b7da1a2dedc99870ca188902529c/langchain_core-1.8.4-py3-none-any.whl", hash = "sha256:5755dee8f8b0c709cd22436dea3689c74a3f6e9dc4251590797dcd66bcd1ef67", size = 591065, upload-time = "2026-11-19T22:35:41.819Z" },
+]
+
+[[package]]
+name = "langchain-ollama"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "langchain-core" },
+    { name = "ollama" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/26/90/d9ce5218e10b01088f4d2cc945c2331efd1834dbc22b23ff1bfeacc7619f/langchain_ollama-1.2.0.tar.gz", hash = "sha256:779e1d9c8c74a9bd870f3a464028e14fc29a8b3e54e0cdd14965c6e200009362", size = 131108, upload-time = "2026-11-23T16:15:52.539Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/69/8d/c14e9c49f1cfc210c9f48e0a84f51c5df1fa92e5a99b9d45915ca5f09e98/langchain_ollama-1.2.0-py3-none-any.whl", hash = "sha256:c0618c6557dd80aeb3a061433a7cb28bd0f45e2762cb4c9793d9542c127874ea", size = 31470, upload-time = "2026-11-23T16:15:51.758Z" },
+]
+
+[[package]]
+name = "langchain-openai"
+version = "1.8.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "certifi" },
+    { name = "langchain-core" },
+    { name = "openai" },
+    { name = "tiktoken" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fa/6e/a3ff2ffaeea59532616f34e7f64c863c42ac5cb618d5bc867201700c29c3/langchain_openai-1.8.5.tar.gz", hash = "sha256:53f2612f61290edc115712a887e384dac9984783689d2e2b4ca7fbc75c1e0e64", size = 2812903, upload-time = "2026-11-19T23:16:07.496Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/cc/8bad1420ab5ad396f3c5ea7d4aabbd45b31a84aeb27bc7122756a5c55026/langchain_openai-1.8.5-py3-none-any.whl", hash = "sha256:e5bc9d1da58231496caf2e09c42c5ed21ddc8bb4e2427300c8e8a7b1a8372bf1", size = 158006, upload-time = "2026-11-19T23:16:06.374Z" },
 ]
 
 [[package]]
@@ -1375,6 +1431,19 @@ wheels = [
 ]
 
 [[package]]
+name = "ollama"
+version = "0.6.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b8/97/eeafe65594e4f4b25e443e068ef7d83aa3105b023e12e1c408c38669fc07/ollama-0.6.3.tar.gz", hash = "sha256:41fc49a8095c4a75939c4c1f8582e4d0671692fb6eac2a5a7ede8c9872b67096", size = 56868, upload-time = "2026-09-29T01:26:51.906Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/64/87505d9e006461233c21c8e66dc1ecee49c996090584b216abd0dd4a8322/ollama-0.6.3-py3-none-any.whl", hash = "sha256:6a20bc42c1a5f889295d7ec490d35e5132fc31f339561530f43a8abd4dbfe508", size = 16603, upload-time = "2026-09-29T01:26:50.451Z" },
+]
+
+[[package]]
 name = "omegaconf"
 version = "2.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1451,24 +1520,6 @@ wheels = [
 ]
 
 [[package]]
-name = "openinference-instrumentation-anthropic"
-version = "3.3.9"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "openinference-instrumentation" },
-    { name = "openinference-semantic-conventions" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-instrumentation" },
-    { name = "opentelemetry-semantic-conventions" },
-    { name = "typing-extensions" },
-    { name = "wrapt" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f4/aa/df6455ff17a2159dba90cf99b0c5ff6816d4aa30a984c607a8df1a5086e0/openinference_instrumentation_anthropic-3.3.9.tar.gz", hash = "sha256:e8c70376d281563e372925e7928c03c4f71e085f6469828a0fad00ce11442a17", size = 29909, upload-time = "2026-11-21T20:14:04.936Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ba/17/ceb226f37dbe02115a35b20ec67c78ce8c90bf95ea1e9203abbe38aed49f/openinference_instrumentation_anthropic-3.3.9-py3-none-any.whl", hash = "sha256:70287b1d91cde10d7e2988630edce23c5b1f8191bd787d7117b9ed1faded102e", size = 34930, upload-time = "2026-11-21T20:14:02.559Z" },
-]
-
-[[package]]
 name = "openinference-instrumentation-langchain"
 version = "0.1.90"
 source = { registry = "https://pypi.org/simple" }
@@ -1483,25 +1534,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b9/96/f609f11f56191a692437e7218cb14f0df07110dfbba69d0fe0dd19078b11/openinference_instrumentation_langchain-0.1.90.tar.gz", hash = "sha256:85082fe58d9a761bad9bd012722906501e5f6b3370084b61c8b590f32ce56cdb", size = 81443, upload-time = "2026-11-21T20:14:06.57Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/98/1a/c5a6a769e1ec15b598f1475f884def98e393bf60adac10d35003efb6e0c6/openinference_instrumentation_langchain-0.1.90-py3-none-any.whl", hash = "sha256:4efd6146e97b2bf1811f83a45e4b002bb5c4eae326a31c961ceda4eabe2a08eb", size = 25491, upload-time = "2026-11-21T20:14:04.169Z" },
-]
-
-[[package]]
-name = "openinference-instrumentation-openai"
-version = "0.1.77"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "anyio" },
-    { name = "openinference-instrumentation" },
-    { name = "openinference-semantic-conventions" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-instrumentation" },
-    { name = "opentelemetry-semantic-conventions" },
-    { name = "typing-extensions" },
-    { name = "wrapt" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/80/6a/0d221a6ee5fd6983c5ad4c171de4d5e5a8efa52d2b139c0102522e96c898/openinference_instrumentation_openai-0.1.77.tar.gz", hash = "sha256:fa92e43e86fba032a3d5747499cc1f3f479b5eeee1e75345bcbf985fb6cda7eb", size = 31252, upload-time = "2026-11-21T20:14:08.224Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/85/e98838cad51a92d759989f4d625e1994d8381ec80e444ee4811475382a73/openinference_instrumentation_openai-0.1.77-py3-none-any.whl", hash = "sha256:9ed63a20336ce1e3578addf495b3355ef316fae4d0d914893e69c3e04a3163e0", size = 38952, upload-time = "2026-11-21T20:14:07.138Z" },
 ]
 
 [[package]]
@@ -2125,23 +2157,21 @@ name = "rag"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "anthropic" },
     { name = "arize-phoenix-client" },
     { name = "arize-phoenix-otel" },
     { name = "docling" },
     { name = "fastapi" },
     { name = "fastembed" },
     { name = "httpx" },
+    { name = "langchain" },
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
-    { name = "openai" },
-    { name = "openinference-instrumentation-anthropic" },
     { name = "openinference-instrumentation-langchain" },
-    { name = "openinference-instrumentation-openai" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pymupdf" },
+    { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "qdrant-client" },
     { name = "rich" },
@@ -2150,6 +2180,17 @@ dependencies = [
     { name = "transformers" },
     { name = "typer" },
     { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+anthropic = [
+    { name = "langchain-anthropic" },
+]
+ollama = [
+    { name = "langchain-ollama" },
+]
+openai = [
+    { name = "langchain-openai" },
 ]
 
 [package.dev-dependencies]
@@ -2165,23 +2206,24 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=2.12.0" },
     { name = "arize-phoenix-client", specifier = ">=3.7.0" },
     { name = "arize-phoenix-otel", specifier = ">=0.17.3" },
     { name = "docling", specifier = ">=2.151.1" },
     { name = "fastapi", specifier = ">=0.165.0" },
     { name = "fastembed", specifier = ">=0.9.1" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "langchain", specifier = ">=1.5.2" },
+    { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.7.12" },
     { name = "langchain-core", specifier = ">=1.8.4" },
+    { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.2.0" },
+    { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.8.5" },
     { name = "langgraph", specifier = ">=1.2.24" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.3" },
-    { name = "openai", specifier = ">=3.57.0" },
-    { name = "openinference-instrumentation-anthropic", specifier = ">=3.3.9" },
     { name = "openinference-instrumentation-langchain", specifier = ">=0.1.90" },
-    { name = "openinference-instrumentation-openai", specifier = ">=0.1.77" },
     { name = "pydantic", specifier = ">=2.14.4" },
     { name = "pydantic-settings", specifier = ">=2.16.3" },
     { name = "pymupdf", specifier = ">=2.1" },
+    { name = "python-dotenv", specifier = ">=1.2.4" },
     { name = "pyyaml", specifier = ">=6.0.4" },
     { name = "qdrant-client", specifier = ">=1.20.0" },
     { name = "rich", specifier = ">=14.0.0" },
@@ -2191,6 +2233,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.19.0" },
     { name = "uvicorn", specifier = ">=0.54.0" },
 ]
+provides-extras = ["anthropic", "openai", "ollama"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2577,6 +2620,23 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/56/97/b4748951a683e369513691c8eea33d100298d556308dcb0ab66b132a67f0/threadpoolctl-3.8.0.tar.gz", hash = "sha256:01080674ad7ac6182429c918a79de92da789bb448acc02fc0b620b1abd6b6137", size = 39424, upload-time = "2026-11-05T11:08:51.112Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/1b/831f2de4840a25db1dd7b1afea433ccafe6bb10aca07e13264f2079462d0/threadpoolctl-3.8.0-py3-none-any.whl", hash = "sha256:f1b49c82704d50f13ffae019c727b0fa4f6791a58f48f06a09c45face1be66da", size = 32091, upload-time = "2026-11-05T11:08:49.773Z" },
+]
+
+[[package]]
+name = "tiktoken"
+version = "0.14.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "regex" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/66/62/167a842aa0429d45f5e797354fd4343a96f6043d67d0513c675c7b8d36e6/tiktoken-0.14.0.tar.gz", hash = "sha256:231dec90efcdccf1b565a1416107736f1e09b1a08fe736ef9d6363e626d03874", size = 38898, upload-time = "2026-08-17T19:49:49.514Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/69/9f/fe6b1aca23331aa5271df5a4bd07bf68a7059254d47faee1b8272592a777/tiktoken-0.14.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:d6cebe67765569df3dafac8474e4eccf5c19d24140492567a5e58a11445732a4", size = 1038499, upload-time = "2026-08-17T19:48:50.666Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/35/e9f47647c9e163bd1de30fe1a491669b7248cfc67b7404c35c009a701e1a/tiktoken-0.14.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:7db45b98e94adf4173a5cd7422b150999a7ee11ff847783a14f6e1b80cc38cb6", size = 1186355, upload-time = "2026-08-17T19:48:51.93Z" },
+    { url = "https://files.pythonhosted.org/packages/51/11/9976ad86980a00cdef05e730a0127a2578a1bc6d11644d8d47246de2eb26/tiktoken-0.14.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:7896eea257fe497a2b7134474d909156c6744ce8da35bce88011a960e008aa0d", size = 1204197, upload-time = "2026-08-17T19:48:53.18Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/9c/7035b0bcfaa68d1ee4803fc5be5214ad865669b05bd20e7105ae8a18afc6/tiktoken-0.14.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:b950248272f1b303dc32986396e2dccfa10cf6d1e83ec8f0bba1776660305482", size = 1250635, upload-time = "2026-08-17T19:48:54.392Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/1d/69cabf18bed7f4366da076735816abce0d4db3fae491ae338a6612128777/tiktoken-0.14.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:3de75343041a1c57333b1e707ac8a9769738241d7d6a55d39e12cf84548337c6", size = 1316085, upload-time = "2026-08-17T19:48:55.525Z" },
 ]
 
 [[package]]

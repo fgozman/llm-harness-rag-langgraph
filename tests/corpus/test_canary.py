@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from pathlib import Path
 
 from docx import Document
@@ -89,6 +90,16 @@ def test_canary_files_carry_fiction_metadata(tmp_path: Path) -> None:
             assert FICTION_MARK in (Presentation(str(path)).core_properties.comments or "")
         else:
             assert FICTION_MARK in (load_workbook(path).properties.description or "")
+
+
+def test_canary_docx_creation_dates_are_set(tmp_path: Path) -> None:
+    # Not python-docx's template default (2013-12-23): the metadata date dates undated documents.
+    from rag.ingestion.dates import metadata_date
+
+    out = tmp_path / "corpus"
+    build_canaries(out, tmp_path / "facts.jsonl", Registry(out / "sources.json"))
+    policy = out / "canary" / "vellmark_supplier_quality_policy.docx"
+    assert metadata_date(policy) == date(2026, 10, 12)
 
 
 def test_canary_build_is_idempotent(tmp_path: Path) -> None:

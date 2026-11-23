@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from docx import Document
@@ -187,6 +187,8 @@ def _build_policy(path: Path) -> None:
     )
     doc.core_properties.title = "Vellmark Supplier Quality Policy"
     doc.core_properties.comments = FICTION_MARK
+    # python-docx otherwise stamps its template's creation date (2013-12-23), which would date the document.
+    doc.core_properties.created = datetime(2026, 10, 12, 9, 0, tzinfo=UTC)
     doc.save(str(path))
 
 
@@ -208,6 +210,7 @@ def _build_incident(path: Path) -> None:
     )
     doc.core_properties.title = "Vellmark Incident Review VA-2026-031"
     doc.core_properties.comments = FICTION_MARK
+    doc.core_properties.created = datetime(2026, 9, 21, 9, 0, tzinfo=UTC)
     doc.save(str(path))
 
 

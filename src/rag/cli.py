@@ -29,8 +29,13 @@ log = logging.getLogger(__name__)
 @app.callback()
 def _main(verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Debug logging.")] = False) -> None:
     """RAG over a local document folder."""
+    from dotenv import load_dotenv
+
     from rag import logs
 
+    # LangChain provider integrations read their API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...) from the
+    # environment; export `.env` so keys kept there work for any provider. Real environment variables win.
+    load_dotenv(".env", override=False)
     settings = get_settings()
     logs.configure(level=settings.log.level, fmt=settings.log.format, verbose=verbose)
 
@@ -282,10 +287,11 @@ class _TurnPrinter:
             console.print(table)
 
 
-def _run_question(graph: Any, question: str, thread_id: str, settings: Settings) -> None:
+def _run_question(graph: Any, question: str, thread_id: str, settings: Settings) -> bool:
+    """Run one turn and print it; False when it timed out, the LLM provider failed or no answer came back."""
     from rag.graph.build import turn_stream
     from rag.graph.stream import TurnTimeoutError
-    from rag.llm.errors import PROVIDER_ERRORS
+    from rag.llm.base import LLMError
 
     printer = _TurnPrinter()
     user, metadata = _trace_context(settings)
@@ -303,12 +309,12 @@ def _run_question(graph: Any, question: str, thread_id: str, settings: Settings)
     except TurnTimeoutError as exc:
         printer.finish_stream()
         console.print(f"[red]Timed out:[/red] {exc} (graph.turn_timeout_s)")
-        raise typer.Exit(code=1) from exc
-    except PROVIDER_ERRORS as exc:
+        return False
+    except LLMError as exc:
         # Provider failures (refusals, truncation, HTTP errors after SDK retries) end the turn cleanly.
         printer.finish_stream()
         console.print(f"[red]LLM error:[/red] {exc}")
-        raise typer.Exit(code=1) from exc
+        return False
     except KeyboardInterrupt:
         stream.cancel()
         printer.finish_stream()
@@ -317,8 +323,9 @@ def _run_question(graph: Any, question: str, thread_id: str, settings: Settings)
     final = state.get("final")
     if final is None:
         console.print("[red]No answer was produced.[/red]")
-        raise typer.Exit(code=1)
+        return False
     printer.finish(final)
+    return True
 
 
 def _qa_graph(settings: Settings) -> Any:
@@ -342,7 +349,8 @@ def ask(
 
     thread = thread_id or uuid.uuid4().hex
     settings = get_settings()
-    _run_question(_qa_graph(settings), question, thread, settings)
+    if not _run_question(_qa_graph(settings), question, thread, settings):
+        raise typer.Exit(code=1)
     console.print(f"[dim]thread: {thread}[/dim]")
 
 
@@ -365,6 +373,7 @@ def chat(
             break
         if question.lower() in ("", "exit", "quit"):
             break
+        # A failed turn is reported and the conversation continues; the user can retry or ask something else.
         _run_question(graph, question, thread, settings)
 
 
@@ -468,6 +477,8 @@ def compare(
     table = Table("metric", *(r.metadata["variant"] for r in reports), title="Comparison")
     for evaluator in reports[0].evaluators():
         table.add_row(evaluator, *(_fmt(r.mean(evaluator)) for r in reports))
+    # Failed examples have no scores, so a variant's means silently cover fewer questions without this row.
+    table.add_row("failed examples", *(f"{len(r.failed())}/{len(r.rows)}" for r in reports))
     console.print(table)
     for r in reports:
         console.print(f"[dim]{r.metadata['variant']}: experiment {r.name}[/dim]")
@@ -482,6 +493,11 @@ def _print_report(report: ExperimentReport, closed_book: ExperimentReport | None
     for evaluator in report.evaluators():
         table.add_row(evaluator, _fmt(report.mean(evaluator)), str(len(report.scores(evaluator))))
     console.print(table)
+    if failed := report.failed():
+        console.print(
+            f"[yellow]{len(failed)}/{len(report.rows)} examples failed (no scores; excluded from the means):"
+            f"[/yellow] {', '.join(failed)}"
+        )
     p50, p95 = report.percentile("latency_s", 0.5), report.percentile("latency_s", 0.95)
     cost = _fmt(report.mean("cost_usd"))
     console.print(f"[dim]latency p50 {_fmt(p50)}s, p95 {_fmt(p95)}s; cost/query {cost} USD[/dim]")

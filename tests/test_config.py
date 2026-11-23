@@ -89,12 +89,37 @@ def test_chunk_overlap_must_be_a_fraction() -> None:
         ChunkingSettings(overlap_ratio=0.9)
 
 
-def test_standard_api_key_env_names(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+def test_llm_params_merge_over_the_preset(tmp_path: Path) -> None:
+    # Overriding one option (e.g. the timeout) must not drop the preset's others, such as OpenAI store: false.
+    (tmp_path / "config.yaml").write_text(
+        "llm:\n  provider: openai\n  params: {timeout: 300}\n"
+        "  structured_output_params: {include_raw: true}\n"
+    )
     s = Settings()
-    assert s.anthropic_api_key is not None
-    assert s.anthropic_api_key.get_secret_value() == "sk-ant-test"
-    assert "sk-ant-test" not in repr(s)
+    assert s.llm.params["timeout"] == 300 and s.llm.params["store"] is False
+    assert s.llm.params["use_responses_api"] is True and s.llm.params["stream_usage"] is True
+    assert s.llm.structured_output_params == {"strict": True, "include_raw": True}
+
+
+def test_provider_preset_fills_options_explicit_values_win(tmp_path: Path) -> None:
+    (tmp_path / "config.yaml").write_text(
+        "llm:\n  tasks:\n    analyze: {params: {effort: high}}\n"
+        "ingestion:\n  contextualize_params: {effort: medium}\n"
+    )
+    s = Settings()
+    assert s.llm.params == {"timeout": 120.0, "max_retries": 3}
+    assert s.llm.max_tokens_param == "max_tokens" and s.llm.prompt_cache_marker is True
+    assert s.llm.tasks["analyze"].params == {"effort": "high"}  # explicit, not merged with the preset
+    assert s.llm.tasks["grade"].params == {"effort": "low", "thinking": {"type": "disabled"}}
+    assert s.llm.tasks["generate"].params == {}
+    assert s.ingestion.contextualize_params == {"effort": "medium"}
+
+
+def test_stale_llm_options_are_rejected(tmp_path: Path) -> None:
+    # Former provider-specific settings must fail loudly rather than be ignored after the LangChain switch.
+    (tmp_path / "config.yaml").write_text("llm:\n  tasks:\n    analyze: {effort: low}\n")
+    with pytest.raises(ValueError, match="effort"):
+        Settings()
 
 
 def test_profile_defaults_do_not_leak_between_instances(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -128,9 +153,31 @@ def test_ollama_provider_defaults_and_override(monkeypatch: pytest.MonkeyPatch) 
     llm = Settings().llm
     assert llm.generation_model == "qwen3:8b"
     assert llm.cheap_model == "llama3:latest"
+    assert llm.max_tokens_param == "num_predict" and llm.prompt_cache_marker is False
+    assert llm.tasks["analyze"].params == {"reasoning": False}
 
 
 def test_empty_env_values_count_as_unset(tmp_path: Path) -> None:
-    (tmp_path / ".env").write_text("OPENAI_API_KEY=\nANTHROPIC_API_KEY=\n")
+    (tmp_path / ".env").write_text("LLM__CHEAP_MODEL=\nANTHROPIC_API_KEY=\n")
+    assert Settings().llm.cheap_model == "claude-haiku-5-5"
+
+
+def test_task_override_keeps_other_tasks_and_unset_fields(tmp_path: Path) -> None:
+    # The example from config.yaml: overriding one task must not drop the others (KeyError at runtime).
+    (tmp_path / "config.yaml").write_text("llm:\n  tasks:\n    generate: {model: upgrade}\n")
+    tasks = Settings().llm.tasks
+    assert {"analyze", "rewrite", "grade", "check", "generate", "golden", "judge", "closed_book"} <= set(
+        tasks
+    )
+    assert tasks["generate"].model == "upgrade"
+    assert tasks["generate"].max_tokens == 8192  # default kept for fields the override doesn't set
+    assert tasks["analyze"].params == {"effort": "low", "thinking": {"type": "disabled"}}
+    # model_dump -> model_validate (evaluation variants) round-trips unchanged.
     s = Settings()
-    assert s.openai_api_key is None and s.anthropic_api_key is None
+    assert Settings.model_validate(s.model_dump()).llm.tasks == s.llm.tasks
+
+
+def test_unknown_task_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "config.yaml").write_text("llm:\n  tasks:\n    generte: {model: upgrade}\n")
+    with pytest.raises(ValueError, match="unknown LLM task 'generte'"):
+        Settings()

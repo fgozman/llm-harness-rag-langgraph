@@ -48,6 +48,8 @@ class GraphDeps:
     llm: LLM
     retriever: RetrieverPort
     settings: GraphSettings
+    # Folder names the user mentions ("the contracts folder") are relative to the document collection.
+    docs_dir: Path
 
 
 def _emit(event: dict[str, Any]) -> None:
@@ -69,10 +71,12 @@ def _parse_day(value: str | None) -> datetime | None:
     return datetime(day.year, day.month, day.day, tzinfo=UTC)
 
 
-def to_search_filters(extracted: ExtractedFilters) -> SearchFilters | None:
+def to_search_filters(extracted: ExtractedFilters, *, docs_dir: Path) -> SearchFilters | None:
+    # Joining keeps absolute paths as they are and puts relative ones under docs_dir (not the process cwd).
+    folder = (docs_dir / Path(extracted.folder).expanduser()).resolve() if extracted.folder else None
     filters = SearchFilters(
         file_names=tuple(extracted.file_names),
-        folder=Path(extracted.folder).expanduser().resolve() if extracted.folder else None,
+        folder=folder,
         date_after=_parse_day(extracted.date_after),
         date_before=_parse_day(extracted.date_before),
     )
@@ -115,6 +119,7 @@ class Nodes:
         self._llm = deps.llm
         self._retriever = deps.retriever
         self._cfg = deps.settings
+        self._docs_dir = deps.docs_dir
 
     def _recent(self, state: GraphState) -> list[Turn]:
         history = state.get("history", [])
@@ -172,7 +177,7 @@ class Nodes:
 
     def retrieve(self, state: GraphState) -> dict[str, Any]:
         plan = state.get("plan")
-        filters = to_search_filters(plan.filters) if plan else None
+        filters = to_search_filters(plan.filters, docs_dir=self._docs_dir) if plan else None
         found = self._retriever.search(state.get("queries", []), filters=filters)
         dropped = False
         if not found and filters is not None:

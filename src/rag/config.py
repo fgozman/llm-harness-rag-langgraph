@@ -10,9 +10,9 @@ from __future__ import annotations
 import os
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, Literal, Self, cast, get_args
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -22,8 +22,8 @@ from pydantic_settings import (
 
 Device = Literal["auto", "cuda", "mps", "cpu"]
 DType = Literal["float16", "bfloat16", "float32"]
-LLMProvider = Literal["anthropic", "openai", "ollama"]
-Effort = Literal["low", "medium", "high"]
+# Order of all-numeric dates (05/06/2026): day-month-year (Europe) or month-day-year (US).
+NumericDateOrder = Literal["dmy", "mdy"]
 
 
 class HardwareProfile(StrEnum):
@@ -104,73 +104,195 @@ _DEFAULT_PRICING: dict[str, ModelPricing] = {
 }
 
 
-class _ProviderModels(BaseModel):
-    generation: str
-    upgrade: str
-    cheap: str
-
-
-# OpenAI IDs per platform.openai.com/docs/models (2026-11-22): Sol = balanced, Astra = flagship, Luna = cheap.
-# Ollama: a model the user has pulled; qwen3:8b is Ollama's own documented example.
-PROVIDER_MODELS: dict[str, _ProviderModels] = {
-    "anthropic": _ProviderModels(
-        generation="claude-sonnet-5-5", upgrade="claude-opus-5-5", cheap="claude-haiku-5-5"
-    ),
-    "openai": _ProviderModels(generation="gpt-6.2-sol", upgrade="gpt-6.2-astra", cheap="gpt-6-luna"),
-    "ollama": _ProviderModels(generation="qwen3:8b", upgrade="qwen3:32b", cheap="qwen3:8b"),
-}
-
-
 # Graph nodes + evaluation (golden-set generation, LLM-as-judge evaluators, closed-book baseline).
 LLMTask = Literal["analyze", "rewrite", "grade", "check", "generate", "golden", "judge", "closed_book"]
 
+# Chat-model options passed to LangChain's `init_chat_model`; names are the integration's own (e.g. Anthropic
+# `effort`/`thinking`, OpenAI `reasoning_effort`, Ollama `reasoning`).
+ModelParams = dict[str, Any]
+
+
+class ProviderPreset(BaseModel):
+    """Defaults for a LangChain chat-model provider. Any other provider works with explicit settings."""
+
+    generation: str
+    upgrade: str
+    cheap: str
+    # Options for every chat model of the provider (timeouts, retries, API flavour).
+    params: ModelParams = Field(default_factory=dict)
+    # Per-task options: cheap routing calls skip thinking, verification calls think harder.
+    task_params: dict[str, ModelParams] = Field(default_factory=dict)
+    contextualize_params: ModelParams = Field(default_factory=dict)
+    # Extra `with_structured_output` options (e.g. OpenAI strict schema adherence).
+    structured_output_params: ModelParams = Field(default_factory=dict)
+    # The integration's name for the output-token limit (LangChain's standard name is max_tokens).
+    max_tokens_param: str = "max_tokens"
+    # Whether the provider needs an explicit cache_control marker on the shared prompt prefix.
+    prompt_cache_marker: bool = False
+
+
+_NO_THINKING_ANTHROPIC: ModelParams = {"effort": "low", "thinking": {"type": "disabled"}}
+
+# OpenAI IDs per platform.openai.com/docs/models (2026-11-22): Sol = balanced, Astra = flagship, Luna = cheap.
+# Ollama: a model the user has pulled; qwen3:8b is Ollama's own documented example. `reasoning: false` is
+# accepted by models without thinking too; effort levels are not, so other Ollama tasks keep model defaults.
+PROVIDER_PRESETS: dict[str, ProviderPreset] = {
+    "anthropic": ProviderPreset(
+        generation="claude-sonnet-5-5",
+        upgrade="claude-opus-5-5",
+        cheap="claude-haiku-5-5",
+        params={"timeout": 120.0, "max_retries": 3},
+        task_params={
+            "analyze": _NO_THINKING_ANTHROPIC,
+            "rewrite": {"effort": "medium"},
+            "grade": _NO_THINKING_ANTHROPIC,
+            "check": {"effort": "medium"},
+            # Sonnet 5.5 cannot disable thinking: tasks on the generation model keep its default.
+            "golden": {"effort": "medium"},
+            "judge": {"effort": "medium"},
+        },
+        contextualize_params=_NO_THINKING_ANTHROPIC,
+        prompt_cache_marker=True,
+    ),
+    "openai": ProviderPreset(
+        generation="gpt-6.2-sol",
+        upgrade="gpt-6.2-astra",
+        cheap="gpt-6-luna",
+        # Responses API without server-side storage: documents are untrusted/private.
+        params={
+            "timeout": 120.0,
+            "max_retries": 3,
+            "use_responses_api": True,
+            "store": False,
+            "stream_usage": True,
+        },
+        task_params={
+            "analyze": {"reasoning_effort": "none"},
+            "rewrite": {"reasoning_effort": "medium"},
+            "grade": {"reasoning_effort": "none"},
+            "check": {"reasoning_effort": "medium"},
+            "golden": {"reasoning_effort": "medium"},
+            "judge": {"reasoning_effort": "medium"},
+        },
+        # Reasoning tokens would eat the tiny output budget of a 1-2 sentence blurb.
+        contextualize_params={"reasoning_effort": "none"},
+        structured_output_params={"strict": True},
+    ),
+    "ollama": ProviderPreset(
+        generation="qwen3:8b",
+        upgrade="qwen3:32b",
+        cheap="qwen3:8b",
+        params={"client_kwargs": {"timeout": 120.0}},
+        task_params={"analyze": {"reasoning": False}, "grade": {"reasoning": False}},
+        contextualize_params={"reasoning": False},
+        max_tokens_param="num_predict",
+    ),
+}
+
 
 class TaskSettings(BaseModel):
-    """Which model a graph node uses, and how hard it thinks."""
+    """Which model a graph node uses, its output budget, and provider-specific options."""
+
+    # Unknown keys are errors: stale options (e.g. the former `effort`/`thinking`) must not be ignored.
+    model_config = ConfigDict(extra="forbid")
 
     model: Literal["cheap", "generation", "upgrade"]
-    # None = the model's default effort.
-    effort: Literal["low", "medium", "high"] | None = None
     max_tokens: int = Field(default=2048, ge=64)
-    # False = disable thinking (cheap routing calls); None = model default.
-    # Sonnet 5.5 cannot disable thinking, so tasks on the generation model keep None.
-    thinking: bool | None = None
+    # None = the provider preset's options for this task.
+    params: ModelParams | None = None
 
 
 def _default_tasks() -> dict[str, TaskSettings]:
     return {
-        "analyze": TaskSettings(model="cheap", effort="low", max_tokens=512, thinking=False),
-        "rewrite": TaskSettings(model="cheap", effort="medium", max_tokens=2048),
-        "grade": TaskSettings(model="cheap", effort="low", max_tokens=2048, thinking=False),
-        "check": TaskSettings(model="cheap", effort="medium", max_tokens=4096),
+        "analyze": TaskSettings(model="cheap", max_tokens=512),
+        "rewrite": TaskSettings(model="cheap", max_tokens=2048),
+        "grade": TaskSettings(model="cheap", max_tokens=2048),
+        "check": TaskSettings(model="cheap", max_tokens=4096),
         "generate": TaskSettings(model="generation", max_tokens=8192),
-        "golden": TaskSettings(model="generation", effort="medium", max_tokens=4096),
-        "judge": TaskSettings(model="cheap", effort="medium", max_tokens=4096),
+        "golden": TaskSettings(model="generation", max_tokens=4096),
+        "judge": TaskSettings(model="cheap", max_tokens=4096),
         # Same model as `generate`: leaky-question detection must reflect what the answering model knows.
         "closed_book": TaskSettings(model="generation", max_tokens=4096),
     }
 
 
 class LLMSettings(BaseModel):
-    provider: LLMProvider = "anthropic"
-    # None = the provider's default from PROVIDER_MODELS.
+    model_config = ConfigDict(extra="forbid")
+
+    # Any LangChain chat-model provider (`init_chat_model` model_provider: anthropic, openai, ollama,
+    # google_genai, mistralai, bedrock_converse, ...). Its integration package must be installed, e.g.
+    # `uv sync --extra anthropic` or `uv add langchain-mistralai`. API keys come from the provider's standard
+    # environment variable (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...; `.env` is exported by the CLI).
+    provider: str = "anthropic"
+    # None = the provider preset's model (required for providers without a preset).
     generation_model: str | None = None
     upgrade_model: str | None = None
     cheap_model: str | None = None
-    ollama_base_url: str = "http://localhost:11434"
-    # Optional override for OpenAI-compatible gateways (Azure, proxies); None = api.openai.com.
-    openai_base_url: str | None = None
-    request_timeout_s: float = 120.0
-    max_retries: int = 3
+    # Endpoint override (Ollama host, OpenAI-compatible gateway, ...); None = the integration's default.
+    base_url: str | None = None
+    # Options for every chat model, merged over the provider preset's (a key set here wins; the preset's other
+    # options, e.g. OpenAI `store: false`, stay unless overridden explicitly).
+    params: ModelParams = Field(default_factory=dict)
+    # None = the provider preset's name for the output-token limit (else "max_tokens").
+    max_tokens_param: str | None = None
+    # LangChain `with_structured_output` method; function_calling for models without native JSON schema.
+    structured_output_method: Literal["json_schema", "function_calling", "json_mode"] = "json_schema"
+    # Extra `with_structured_output` options, merged over the provider preset's.
+    structured_output_params: ModelParams = Field(default_factory=dict)
+    # Mark the shared document prefix of contextualization prompts with cache_control (explicit prompt
+    # caching, Anthropic-style); None = the provider preset's.
+    prompt_cache_marker: bool | None = None
     pricing: dict[str, ModelPricing] = Field(default_factory=lambda: dict(_DEFAULT_PRICING))
     tasks: dict[str, TaskSettings] = Field(default_factory=_default_tasks)
 
+    @field_validator("tasks", mode="before")
+    @classmethod
+    def _merge_default_tasks(cls, value: Any) -> Any:
+        # A config entry overrides only the fields it sets: `generate: {model: upgrade}` keeps the default
+        # max_tokens, and every other task keeps its defaults (a plain dict field would replace them all).
+        # Values of the wrong shape pass through unchanged so pydantic reports them as validation errors.
+        if not isinstance(value, dict):
+            return value
+        overrides = cast(dict[str, Any], value)
+        merged: dict[str, Any] = {name: t.model_dump() for name, t in _default_tasks().items()}
+        for name, override in overrides.items():
+            if name not in merged:
+                raise ValueError(f"unknown LLM task {name!r}; expected one of {', '.join(get_args(LLMTask))}")
+            fields: Any = (
+                override.model_dump(exclude_unset=True) if isinstance(override, TaskSettings) else override
+            )
+            merged[name] = (
+                {**merged[name], **cast(dict[str, Any], fields)} if isinstance(fields, dict) else fields
+            )
+        return merged
+
     @model_validator(mode="after")
-    def _apply_provider_defaults(self) -> Self:
-        models = PROVIDER_MODELS[self.provider]
-        self.generation_model = self.generation_model or models.generation
-        self.upgrade_model = self.upgrade_model or models.upgrade
-        self.cheap_model = self.cheap_model or models.cheap
+    def _apply_provider_preset(self) -> Self:
+        preset = PROVIDER_PRESETS.get(self.provider)
+        if preset is None:
+            missing = [
+                f"llm.{f}"
+                for f in ("generation_model", "upgrade_model", "cheap_model")
+                if not getattr(self, f)
+            ]
+            if missing:
+                raise ValueError(
+                    f"provider {self.provider!r} has no preset: set {', '.join(missing)} "
+                    f"(presets: {', '.join(PROVIDER_PRESETS)})"
+                )
+            preset = ProviderPreset(generation="", upgrade="", cheap="")
+        self.generation_model = self.generation_model or preset.generation
+        self.upgrade_model = self.upgrade_model or preset.upgrade
+        self.cheap_model = self.cheap_model or preset.cheap
+        self.params = {**preset.params, **self.params}
+        self.structured_output_params = {**preset.structured_output_params, **self.structured_output_params}
+        if self.max_tokens_param is None:
+            self.max_tokens_param = preset.max_tokens_param
+        if self.prompt_cache_marker is None:
+            self.prompt_cache_marker = preset.prompt_cache_marker
+        for name, task in self.tasks.items():
+            if task.params is None:
+                task.params = dict(preset.task_params.get(name, {}))
         return self
 
 
@@ -237,24 +359,26 @@ class ChunkingSettings(BaseModel):
 
 
 class IngestionSettings(BaseModel):
+    # Unknown keys are errors: the former batch/effort options must not be silently ignored.
+    model_config = ConfigDict(extra="forbid")
+
     contextualize: bool = True
-    # auto: Message Batches API (50% cheaper, async) for large runs, concurrent sync calls for small ones.
-    contextualize_mode: Literal["auto", "batch", "sync"] = "auto"
-    contextualize_batch_threshold: int = Field(default=200, ge=1)
     contextualize_concurrency: int = Field(default=4, ge=1)
-    # None = provider default: anthropic "low", openai "none" (reasoning tokens would eat the tiny output
-    # budget), ollama: thinking disabled. "none"/"minimal" are not valid for Anthropic.
-    contextualize_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
+    # Chat-model options for contextualization (cheap model); None = the LLM provider preset's (thinking off:
+    # reasoning tokens would eat the tiny output budget).
+    contextualize_params: ModelParams | None = None
     contextualize_max_output_tokens: int = Field(default=150, ge=16)
     # Spec: keep contextualization prompts under 100K tokens. Long documents get a per-section window
     # (outline + neighbouring sections) and each distinct window is a separate cache prefix: 8K keeps the test
     # corpus at ~$2.4-3.8 vs $5-21 at 70K (cost model 2026-11-23), ample for a 1-2 sentence blurb.
     contextualize_max_prompt_tokens: int = Field(default=8_000, ge=1_000, le=100_000)
-    batch_poll_interval_s: float = Field(default=30.0, gt=0)
     # Files are processed in windows so one huge run doesn't hold every chunk in memory at once.
     window_files: int = Field(default=50, ge=1)
     pdf_ocr: bool = True
     language: str = "en"
+    # How all-numeric dates in document text (05/06/2026) are read when dating documents: "dmy" (Europe) or
+    # "mdy" (US). None = they are ambiguous and skipped.
+    numeric_date_order: NumericDateOrder | None = None
 
 
 class GraphSettings(BaseModel):
@@ -318,10 +442,6 @@ class Settings(BaseSettings):
     device: Device = "auto"
     dtype: DType | None = None
 
-    # Top-level so the providers' standard env var names (ANTHROPIC_API_KEY, OPENAI_API_KEY) work.
-    anthropic_api_key: SecretStr | None = None
-    openai_api_key: SecretStr | None = None
-
     docs_dir: Path = Path("./data/docs")
     state_dir: Path = Path("./.rag")
 
@@ -348,6 +468,9 @@ class Settings(BaseSettings):
         self.reranker.model = self.reranker.model or prof.reranker_model
         self.reranker.candidates = self.reranker.candidates or prof.rerank_candidates
         self.dtype = self.dtype or prof.dtype
+        if self.ingestion.contextualize_params is None:
+            preset = PROVIDER_PRESETS.get(self.llm.provider)
+            self.ingestion.contextualize_params = dict(preset.contextualize_params) if preset else {}
         return self
 
     @classmethod

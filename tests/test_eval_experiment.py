@@ -19,6 +19,7 @@ from rag.evaluation.experiment import (
     apply_overrides,
     closed_book_task,
     dataset_records,
+    ensure_dataset,
     parse_variant,
     run_experiment,
 )
@@ -213,6 +214,41 @@ def test_dataset_records_carry_gold_files_and_categories() -> None:
     assert metadata[1]["gold_files"] == []
 
 
+class FakeDatasets:
+    def __init__(self, existing: Sequence[str] = (), list_error: Exception | None = None) -> None:
+        self.existing = list(existing)
+        self.list_error = list_error
+        self.created: list[str] = []
+
+    def list(self) -> list[dict[str, Any]]:
+        if self.list_error is not None:
+            raise self.list_error
+        return [{"name": n} for n in self.existing]
+
+    def get_dataset(self, *, dataset: str) -> str:
+        return f"existing:{dataset}"
+
+    def create_dataset(self, *, name: str, **_: Any) -> str:
+        self.created.append(name)
+        return f"created:{name}"
+
+
+def test_ensure_dataset_reuses_existing_and_creates_missing() -> None:
+    items = [item(1)]
+    created = FakeDatasets()
+    first = ensure_dataset(created, items, "golden")
+    assert first.startswith("created:golden-1q-") and len(created.created) == 1
+    name = created.created[0]
+    assert ensure_dataset(FakeDatasets(existing=[name]), items, "golden") == f"existing:{name}"
+
+
+def test_ensure_dataset_does_not_create_when_phoenix_fails() -> None:
+    datasets = FakeDatasets(list_error=ConnectionError("phoenix down"))
+    with pytest.raises(ConnectionError):
+        ensure_dataset(datasets, [item(1)], "golden")
+    assert datasets.created == []
+
+
 @dataclass
 class FakeDataset:
     examples: list[dict[str, Any]]
@@ -268,6 +304,16 @@ def test_run_experiment_collects_a_local_report() -> None:
     assert report.mean("hit_at_k") == 1.0  # the unanswerable example is excluded, not counted as 0
     assert report.by_category("abstention") == {"exact_figure": 1.0, "unanswerable": 1.0}
     assert report.rows["q9"]["output"]["status"] == "abstained"
+    assert report.failed() == []
+
+
+def test_failed_examples_are_reported() -> None:
+    report = ExperimentReport(name="exp", metadata={})
+    report.rows = {
+        "q1": {"scores": {}, "output": {"answer": "a"}},
+        "q2": {"scores": {}, "output": {"error": "APIError: boom"}},
+    }
+    assert report.failed() == ["q2"]
 
 
 def test_closed_book_task_always_keeps_the_best_guess() -> None:

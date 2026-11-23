@@ -43,7 +43,7 @@ from rag.config import Settings
 from rag.graph.build import turn_stream
 from rag.graph.state import FinalAnswer
 from rag.graph.stream import TurnStream, TurnTimeoutError
-from rag.llm.errors import PROVIDER_ERRORS
+from rag.llm.base import LLMError
 from rag.services import Probe, probe, service_checks
 
 log = logging.getLogger("rag.api")
@@ -188,7 +188,7 @@ async def _answer_events(turn: Turn, timeout_s: float) -> AsyncGenerator[ServerS
         turn.outcome = "timeout"
         log.warning("turn timed out", extra={**fields, "timeout_s": timeout_s})
         yield _error("timeout", str(exc), turn.thread_id)
-    except PROVIDER_ERRORS as exc:
+    except LLMError as exc:
         turn.outcome = "llm_error"
         message = f"{type(exc).__name__}: {exc}"
         log.warning("LLM provider error", extra={**fields, "error": message})

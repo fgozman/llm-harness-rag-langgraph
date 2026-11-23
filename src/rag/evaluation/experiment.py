@@ -81,6 +81,8 @@ def dataset_records(
 
 
 class _Datasets(Protocol):
+    def list(self) -> list[Any]: ...
+
     def get_dataset(self, *, dataset: str) -> Any: ...
 
     def create_dataset(self, **kwargs: Any) -> Any: ...
@@ -90,17 +92,18 @@ def ensure_dataset(datasets: _Datasets, items: Sequence[GoldenItem], prefix: str
     """Content-addressed name: an edited golden set becomes a new dataset; an unchanged one is reused."""
     digest = hashlib.sha256("".join(i.model_dump_json() for i in items).encode()).hexdigest()[:8]
     name = f"{prefix}-{len(items)}q-{digest}"
-    try:
+    # Existence is checked by listing: get_dataset reports "not found" only as a generic ValueError, and any
+    # other failure (Phoenix down, auth) must surface instead of triggering a create.
+    if any(d["name"] == name for d in datasets.list()):
         return datasets.get_dataset(dataset=name)
-    except Exception:  # not found (the client raises httpx/HTTP errors)
-        inputs, outputs, metadata = dataset_records(items)
-        return datasets.create_dataset(
-            name=name,
-            inputs=inputs,
-            outputs=outputs,
-            metadata=metadata,
-            dataset_description="Golden QA set over the post-cutoff test corpus (see eval/golden.jsonl).",
-        )
+    inputs, outputs, metadata = dataset_records(items)
+    return datasets.create_dataset(
+        name=name,
+        inputs=inputs,
+        outputs=outputs,
+        metadata=metadata,
+        dataset_description="Golden QA set over the post-cutoff test corpus (see eval/golden.jsonl).",
+    )
 
 
 # --- tasks -------------------------------------------------------------------------------------------
@@ -197,6 +200,15 @@ class ExperimentReport:
         for category, value in self.scores(evaluator):
             grouped[category].append(value)
         return {c: statistics.fmean(v) for c, v in sorted(grouped.items())}
+
+    def failed(self) -> list[str]:
+        """Examples whose task raised; they have no scores, so the means above exclude them."""
+        failed: list[str] = []
+        for example_id, row in self.rows.items():
+            # Every row has an output: the task runs (and records it) before any evaluator.
+            if "error" in row["output"]:
+                failed.append(example_id)
+        return sorted(failed)
 
     def evaluators(self) -> list[str]:
         return sorted({name for row in self.rows.values() for name in row["scores"]})

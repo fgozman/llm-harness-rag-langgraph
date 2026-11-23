@@ -1,6 +1,8 @@
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any
 
 import pytest
 
@@ -74,25 +76,38 @@ def test_text_format_appends_context(records: list[logging.LogRecord]) -> None:
     assert "request_id=r9" in text and "status=ok" in text
 
 
+def _callback_in_module(module: str, body: Callable[[], None]) -> Callable[[Future[int]], None]:
+    """A done-callback whose frame belongs to `module` (stands in for LangGraph's executor callback)."""
+    namespace: dict[str, Any] = {"__name__": module, "body": body}
+    exec("def callback(future):\n    body()\n", namespace)
+    return namespace["callback"]
+
+
 def test_abandoned_node_shutdown_error_is_dropped_other_errors_kept() -> None:
-    futures = logging.getLogger("concurrent.futures")
     seen: list[str] = []
 
     class Capture(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
-            seen.append(record.getMessage())
+            seen.append(str(record.exc_info[1]) if record.exc_info else record.getMessage())
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    done = pool.submit(lambda: 1)
+    done.result()
+    pool.shutdown()
+
+    def resubmit() -> None:
+        pool.submit(lambda: 2)
+
+    def other() -> None:
+        raise RuntimeError("something else")
 
     handler = Capture()
     logging.getLogger().addHandler(handler)
     try:
-        for message, exc in (
-            ("abandoned", RuntimeError("cannot schedule new futures after shutdown")),
-            ("real", RuntimeError("something else")),
-        ):
-            try:
-                raise exc
-            except RuntimeError:
-                futures.exception(message)
+        # A finished future runs callbacks immediately; concurrent.futures logs what they raise.
+        done.add_done_callback(_callback_in_module("langgraph.pregel.fake", resubmit))  # dropped
+        done.add_done_callback(_callback_in_module("someone.else", resubmit))  # not LangGraph: kept
+        done.add_done_callback(_callback_in_module("langgraph.pregel.fake", other))  # other error: kept
     finally:
         logging.getLogger().removeHandler(handler)
-    assert seen == ["real"]
+    assert seen == ["cannot schedule new futures after shutdown", "something else"]

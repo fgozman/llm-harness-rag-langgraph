@@ -26,7 +26,7 @@ from rag.ingestion.manifest import Manifest
 from rag.ingestion.models import ParentSection
 from rag.ingestion.pipeline import IngestionPipeline
 from rag.retrieval.retriever import Retriever, SearchMode
-from test_graph import THREE, FakeLLM, FakeRetriever, analysis, grades, ok, plan  # pyright: ignore[reportImplicitRelativeImport]
+from test_graph import DOCS_DIR, THREE, FakeLLM, FakeRetriever, analysis, grades, ok, plan  # pyright: ignore[reportImplicitRelativeImport]
 from test_pipeline import FakeDense, FakeIndex, FakeParser, FakeSparse  # pyright: ignore[reportImplicitRelativeImport]
 from test_retriever import RANKINGS, FakeReranker, FakeSearcher  # pyright: ignore[reportImplicitRelativeImport]
 
@@ -169,7 +169,7 @@ def test_graph_nodes_traced_with_session_and_nested_retrieval(
 
     llm = FakeLLM([analysis(), plan(), grades(True, False, True), ok()], ["A [1]."])
     graph = build_graph(
-        GraphDeps(llm=llm, retriever=TracedRetriever([THREE]), settings=GraphSettings()),
+        GraphDeps(llm=llm, retriever=TracedRetriever([THREE]), settings=GraphSettings(), docs_dir=DOCS_DIR),
         checkpointer=InMemorySaver(serde=state_serializer()),
     )
     run_turn(graph, "q", thread_id="thread-7", user_id="tester", metadata={"interface": "test"})
@@ -239,7 +239,7 @@ def test_api_key_is_passed_when_phoenix_auth_is_enabled(monkeypatch: pytest.Monk
 def test_graph_without_instrumentation_prints_no_tracer_warnings(capsys: pytest.CaptureFixture[str]) -> None:
     llm = FakeLLM([analysis(), plan(), grades(True, False, True), ok()], ["A [1]."])
     graph = build_graph(
-        GraphDeps(llm=llm, retriever=FakeRetriever([THREE]), settings=GraphSettings()),
+        GraphDeps(llm=llm, retriever=FakeRetriever([THREE]), settings=GraphSettings(), docs_dir=DOCS_DIR),
         checkpointer=InMemorySaver(serde=state_serializer()),
     )
     run_turn(graph, "q", thread_id="t")
@@ -259,7 +259,7 @@ def test_contextualization_worker_threads_keep_the_trace(spans: InMemorySpanExpo
 
     doc = make_doc(2, 5)
     with telemetry.span("contextualize", "CHAIN"):
-        contextualizer(TracingBackend(), contextualize_mode="sync").contextualize(
+        contextualizer(TracingBackend()).contextualize(
             [(doc, [chunk(0, "Section 0", "a"), chunk(1, "Section 1", "b"), chunk(2, "Section 0", "c")])]
         )
     finished = spans.get_finished_spans()

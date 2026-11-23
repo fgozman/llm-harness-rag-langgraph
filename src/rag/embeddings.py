@@ -61,11 +61,19 @@ class QwenDenseEmbedder:
         return self._dimension
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
-        with self._lock:
-            vectors = self._model.encode(
-                list(texts), batch_size=self._batch_size, normalize_embeddings=True, convert_to_numpy=True
-            )
-        return vectors.astype("float32").tolist()
+        out: list[list[float]] = []
+        # Lock per batch, not per file: a large file being ingested must not stall query embeddings of
+        # concurrent /ask turns for its whole duration.
+        for start in range(0, len(texts), self._batch_size):
+            with self._lock:
+                vectors = self._model.encode(
+                    list(texts[start : start + self._batch_size]),
+                    batch_size=self._batch_size,
+                    normalize_embeddings=True,
+                    convert_to_numpy=True,
+                )
+            out.extend(vectors.astype("float32").tolist())
+        return out
 
     def embed_query(self, text: str) -> list[float]:
         with self._lock:

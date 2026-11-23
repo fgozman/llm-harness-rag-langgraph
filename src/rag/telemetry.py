@@ -1,8 +1,9 @@
 """Phoenix / OpenTelemetry tracing.
 
-`init_tracing` registers Phoenix once per process with OpenInference auto-instrumentation (LangChain /
-LangGraph, Anthropic, OpenAI). Manual spans use the global OTel API, which is a no-op until a provider is
-registered, so tracing can be disabled (config) or unavailable (Phoenix down) without affecting the app.
+`init_tracing` registers Phoenix once per process with OpenInference auto-instrumentation of LangChain /
+LangGraph, which also covers every chat-model call whatever the provider. Manual spans use the global OTel
+API, which is a no-op until a provider is registered, so tracing can be disabled (config) or unavailable
+(Phoenix down) without affecting the app.
 """
 
 from __future__ import annotations

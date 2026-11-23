@@ -122,7 +122,12 @@ def run_evaluation(
         task = closed_book_task(llm, settings.llm.pricing)
     else:
         graph = build_graph(
-            GraphDeps(llm=llm, retriever=build_retriever(settings), settings=settings.graph),
+            GraphDeps(
+                llm=llm,
+                retriever=build_retriever(settings),
+                settings=settings.graph,
+                docs_dir=settings.docs_dir,
+            ),
             checkpointer=InMemorySaver(serde=state_serializer()),
         )
         task = rag_task(graph, settings.llm.pricing)

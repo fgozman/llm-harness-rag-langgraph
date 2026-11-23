@@ -11,13 +11,15 @@ Qdrant and Phoenix run in Docker.
 
 ## Quick start
 
-Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), Docker, and an Anthropic API key (or OpenAI, or a
-local [Ollama](https://ollama.com)). Apple Silicon macOS or Linux (Intel macs have no current torch wheels).
+Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), Docker, and a chat model reachable through
+[LangChain](https://python.langchain.com/docs/integrations/chat/): Anthropic (default), OpenAI, a local
+[Ollama](https://ollama.com), or any other provider with a LangChain integration. Apple Silicon macOS or Linux
+(Intel macs have no current torch wheels).
 
 ```bash
 git clone <this repo> rag && cd rag
-cp .env.example .env              # set ANTHROPIC_API_KEY; change ports if 6333/6006 are taken
-make install                      # uv sync
+cp .env.example .env              # set your provider's API key; change ports if 6333/6006 are taken
+make install                      # uv sync + the LangChain integration (PROVIDERS=anthropic by default)
 make up                           # Qdrant + Phoenix in Docker, waits until healthy
 uv run rag doctor                 # both services "ok"
 
@@ -64,7 +66,7 @@ flowchart LR
   ING -->|"dense + sparse vectors"| Q
   RET --> Q
   Host -. "OTLP traces" .-> PX
-  G --> LLM["Anthropic / OpenAI / Ollama"]
+  G --> LLM["LangChain chat model (Anthropic / OpenAI / Ollama / ...)"]
   ING --> LLM
 ```
 
@@ -91,7 +93,8 @@ flowchart TD
 - **Chunks** follow document structure (headings, slides, sheets; tables never split mid-row). Small child chunks
   are indexed, and the larger parent section is what the LLM reads ("small-to-big").
 - **Contextual retrieval**: the cheap model writes a 1–2 sentence context per chunk that is embedded with it. It
-  uses Anthropic prompt caching and the Message Batches API for large runs.
+  puts the shared document prefix first so prompt caching hits (with an explicit `cache_control` marker for
+  providers that need one, e.g. Anthropic).
 - **Answers** quote only passages graded relevant. Citations `[n]` map to file + page/section + snippet. Invalid
   markers are removed, and an answer that fails verification twice is downgraded to a cautious answer that says
   what could and couldn't be verified. Document text is treated as untrusted data (prompt-injection safe).
@@ -112,8 +115,13 @@ uv run rag config                     # fully resolved settings (secrets masked)
 uv run rag -v …                       # debug logging
 ```
 
-Date filters use each document's date: from the file name (`report_2026-11-04.pdf`), else the first date near the
-start of the text, else the file's modification time.
+Date filters use each document's date: from the file name (`report_2026-11-04.pdf`), else a date near the
+start of the text, else the PDF/DOCX creation date (file metadata, when plausible), else the file's modification
+time (unreliable after a copy or git checkout). In the text, a date after an issue word ("issued", "dated",
+"published", "filed", "signed", ...) wins over the first date; dates after "effective", "period ended/ending",
+"as of", "through", "cited" are skipped (they are not the issue date), and so are all-numeric dates like
+05/06/2026 unless `ingestion.numeric_date_order` (`dmy` or `mdy`) says how to read them. Documents keep the date
+they were indexed with: after changing these settings, run `rag ingest --force` to re-date them.
 
 ## HTTP API
 
@@ -205,12 +213,13 @@ be selected with `RAG_CONFIG_FILE`. `uv run rag config` prints the resolved valu
 | `state_dir` (`STATE_DIR`) | `./.rag` | manifest, parent docstore, conversation checkpoints |
 | `hardware_profile` (`HARDWARE_PROFILE`) | `mac` | `mac`: Qwen3-Embedding-0.6B + Qwen3-Reranker-0.6B, float16, 20 rerank candidates; `gpu`: the 4B models, bfloat16, 30; `cpu`: 0.6B + bge-reranker-v2-m3, float32, 20 |
 | `device` (`DEVICE`) | `auto` | cuda > mps > cpu |
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | – | provider keys |
-| `llm.provider` | `anthropic` | `anthropic` \| `openai` \| `ollama` |
-| `llm.generation_model` / `cheap_model` / `upgrade_model` | per provider | Anthropic: `claude-sonnet-5-5` / `claude-haiku-5-5` / `claude-opus-5-5` |
-| `llm.tasks.<node>` | see `config.py` | model role, effort, max tokens, thinking per node (`analyze`, `rewrite`, `grade`, `check`, `generate`, eval tasks) |
-| `llm.request_timeout_s`, `llm.max_retries` | 120, 3 | per LLM request (SDK backoff on 429/5xx) |
-| `llm.ollama_base_url`, `llm.openai_base_url` | `http://localhost:11434`, – | |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ... | – | the provider's standard key variable (read by its LangChain integration; `.env` is exported by the CLI) |
+| `llm.provider` | `anthropic` | any LangChain `init_chat_model` provider; presets for `anthropic` \| `openai` \| `ollama` |
+| `llm.generation_model` / `cheap_model` / `upgrade_model` | preset | Anthropic: `claude-sonnet-5-5` / `claude-haiku-5-5` / `claude-opus-5-5`; required for providers without a preset |
+| `llm.tasks.<node>` | see `config.py` | model role, `max_tokens` and `params` per node (`analyze`, `rewrite`, `grade`, `check`, `generate`, eval tasks); only the fields you set change |
+| `llm.params` | preset | chat-model options for every call, in the integration's names (timeouts, retries, ...); merged over the preset's |
+| `llm.base_url` | – | endpoint override (Ollama host, OpenAI-compatible gateway) |
+| `llm.structured_output_method` | `json_schema` | `function_calling` for models without native JSON-schema output |
 | `embedding.model`, `embedding.batch_size` | profile | query instruction prefix per the Qwen3 model card |
 | `reranker.enabled`, `reranker.model`, `reranker.candidates`, `reranker.top_k` | true, profile, profile, 6 | |
 | `retrieval.mode` | `hybrid` | `hybrid` \| `dense` \| `sparse` |
@@ -218,7 +227,7 @@ be selected with `RAG_CONFIG_FILE`. `uv run rag config` prints the resolved valu
 | `retrieval.context_token_budget` | 12000 | tokens of parent passages sent to the LLM |
 | `chunking.child_target_tokens` / `child_max_tokens` / `overlap_ratio` / `parent_max_tokens` | 500 / 600 / 0.12 / 2000 | |
 | `ingestion.contextualize` | true | contextual enrichment (needs an LLM) |
-| `ingestion.contextualize_mode` | `auto` | `batch` (Anthropic Message Batches, 50% cheaper) \| `sync` \| `auto` (batch from 200 chunks) |
+| `ingestion.contextualize_params` | preset | chat-model options for contextualization (thinking off) |
 | `ingestion.pdf_ocr` | true | OCR for scanned PDFs (Docling) |
 | `graph.max_rewrite_retries`, `graph.max_regenerations` | 2, 1 | loop caps |
 | `graph.min_relevant_passages`, `graph.max_query_variants`, `graph.history_turns` | 2, 4, 6 | |
@@ -234,9 +243,20 @@ be selected with `RAG_CONFIG_FILE`. `uv run rag config` prints the resolved valu
 Docker host ports: `QDRANT_HTTP_PORT`, `QDRANT_GRPC_PORT`, `PHOENIX_PORT`, `PHOENIX_GRPC_PORT` in `.env`. If you
 change them, update `QDRANT__URL` / `PHOENIX__COLLECTOR_ENDPOINT` to match.
 
-**Providers.** OpenAI: `LLM__PROVIDER=openai` + `OPENAI_API_KEY`. Ollama: `LLM__PROVIDER=ollama` and a pulled model
-(`ollama pull qwen3:8b`). Small local models answer noticeably worse. Contextual enrichment works with all three,
-but batching and prompt caching are Anthropic-only.
+**Providers.** Every LLM call goes through a LangChain chat model built with `init_chat_model`; the code has no
+provider SDK dependency. Install the integration you use as an extra (`make install PROVIDERS="anthropic openai
+ollama"`, i.e. `uv sync --extra ...`) or any other with `uv add langchain-<provider>`.
+
+- OpenAI: `LLM__PROVIDER=openai` + `OPENAI_API_KEY` (Responses API, nothing stored server-side).
+- Ollama: `LLM__PROVIDER=ollama` and a pulled model (`ollama pull qwen3:8b`); `LLM__BASE_URL` for a remote host.
+  Small local models answer noticeably worse.
+- Other providers, e.g. Mistral: `uv add langchain-mistralai`, then set `llm.provider: mistralai`, the three
+  models, and if needed `llm.params` / `llm.tasks.<node>.params` (the integration's option names). Options a
+  chat model doesn't define are rejected at startup rather than ignored.
+
+The presets in `rag.config.PROVIDER_PRESETS` hold each provider's models and options (e.g. thinking off for the
+cheap routing calls). Contextual enrichment runs as concurrent calls with every provider; there is no batch API
+mode.
 
 ## Tracing (Phoenix)
 

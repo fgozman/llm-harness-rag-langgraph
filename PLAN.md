@@ -30,7 +30,7 @@ flowchart LR
   (Docker on macOS has no MPS access).
 - Device auto-detect: cuda > mps > cpu; float16 on MPS; no flash_attention_2 on MPS.
 - Ingestion: discover → hash → manifest diff → Docling parse (fallback PyMuPDF/plain) → structure-aware
-  parent/child chunks → optional contextualization (Haiku, Batches + prompt caching) → dense + BM25 → Qdrant upsert.
+  parent/child chunks → optional contextualization (cheap model via LangChain, prompt caching) → dense + BM25 → Qdrant upsert.
 - Query graph: analyze_query → rewrite_query → retrieve → rerank (+parent expansion, budget) → grade_documents
   (↺ rewrite, max 2) → generate → check_answer (↺ regenerate once) → respond. SQLite checkpointer keyed by thread_id.
 - Routing LLM outputs use native JSON-schema structured outputs (no forced tool_choice; no non-default sampling
