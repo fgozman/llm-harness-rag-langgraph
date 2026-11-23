@@ -195,6 +195,9 @@ def test_payload_has_required_metadata(h: Harness) -> None:
         "language",
         "text",
         "context",
+        "doc_date",
+        "doc_date_source",
+        "doc_date_ts",
     ):
         assert key in payload, key
     assert payload["file_path"] == str((h.root / "a.md").resolve())
@@ -231,3 +234,16 @@ def test_missing_collection_forces_full_reindex(h: Harness) -> None:
 def test_force_reindexes_unchanged_files(h: Harness) -> None:
     h.pipeline.run(h.root)
     assert h.pipeline.run(h.root, force=True).indexed == 2
+
+
+def test_document_date_prefers_name_then_content_then_mtime(h: Harness) -> None:
+    h.write("minutes_2026-03-15.md", "Meeting notes")
+    h.write("letter.md", "November 19, 2026. Dear committee")
+    h.pipeline.run(h.root)
+    dates = {
+        p.payload["file_name"]: (p.payload["doc_date"], p.payload["doc_date_source"])
+        for p in h.index.points.values()
+    }
+    assert dates["minutes_2026-03-15.md"] == ("2026-03-15", "name")
+    assert dates["letter.md"] == ("2026-11-19", "content")
+    assert dates["a.md"][1] == "mtime"

@@ -149,14 +149,15 @@ def test_requires_at_least_one_query() -> None:
 def test_filters_translate_to_qdrant_conditions() -> None:
     after = datetime(2026, 7, 1, tzinfo=UTC)
     flt = to_qdrant_filter(
-        SearchFilters(file_names=("a.pdf", "b.pdf"), folder=Path("/docs/sec"), modified_after=after),
+        SearchFilters(file_names=("a.pdf", "b.pdf"), folder=Path("/docs/sec"), date_after=after),
         folders=["/docs/sec", "/docs/sec/q3"],
     )
     assert flt is not None and flt.must is not None
     conditions = {c.key: c for c in flt.must if isinstance(c, models.FieldCondition)}
     assert conditions["file_name"].match == models.MatchAny(any=["a.pdf", "b.pdf"])
     assert conditions["folder"].match == models.MatchAny(any=["/docs/sec", "/docs/sec/q3"])
-    assert conditions["file_mtime"].range == models.Range(gte=after.timestamp())
+    # Filters on the document date (name > content > mtime), not the raw modification time.
+    assert conditions["doc_date_ts"].range == models.Range(gte=after.timestamp())
 
 
 def test_empty_filters_mean_no_filter() -> None:

@@ -19,6 +19,7 @@ _PAYLOAD_INDEXES: dict[str, models.PayloadSchemaType] = {
     "folder": models.PayloadSchemaType.KEYWORD,
     "file_type": models.PayloadSchemaType.KEYWORD,
     "file_mtime": models.PayloadSchemaType.FLOAT,
+    "doc_date_ts": models.PayloadSchemaType.FLOAT,
 }
 
 
@@ -45,6 +46,7 @@ class QdrantChunkIndex:
     def ensure_collection(self, dense_dim: int) -> None:
         if self.exists():
             self._check_dimension(dense_dim)
+            self._ensure_payload_indexes()
             return
         self._client.create_collection(
             self._collection,
@@ -54,8 +56,14 @@ class QdrantChunkIndex:
             # BM25 term frequencies come from FastEmbed; Qdrant applies IDF over the live collection.
             sparse_vectors_config={SPARSE_VECTOR: models.SparseVectorParams(modifier=models.Modifier.IDF)},
         )
+        self._ensure_payload_indexes()
+
+    def _ensure_payload_indexes(self) -> None:
+        # Also adds indexes introduced after a collection was created (e.g. doc_date_ts).
+        existing = self._client.get_collection(self._collection).payload_schema
         for field, schema in _PAYLOAD_INDEXES.items():
-            self._client.create_payload_index(self._collection, field, schema)
+            if field not in existing:
+                self._client.create_payload_index(self._collection, field, schema)
 
     def _check_dimension(self, dense_dim: int) -> None:
         vectors = self._client.get_collection(self._collection).config.params.vectors

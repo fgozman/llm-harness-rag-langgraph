@@ -109,7 +109,9 @@ def test_release_notes_markdown() -> None:
         Release("prebuilt==1.1.3", "", date(2026, 9, 1), "", "u2"),
     ]
     md = render_release_notes("langchain-ai/langgraph", releases, since=date(2026, 7, 1), license_id="MIT")
-    assert md.startswith("# langchain-ai/langgraph release notes since 2026-07-01")
+    assert md.startswith("# langchain-ai/langgraph release notes")
+    # The newest release date comes first, so date inference reads the issue date, not the cutoff.
+    assert md.splitlines()[2] == "Last updated 2026-11-10; covers releases since 2026-07-01."
     assert "## 1.2.24 (2026-11-10)" in md and "Fixed X." in md
     assert "## prebuilt==1.1.3 (2026-09-01)" in md and "_No release notes._" in md
     assert md.index("1.2.24") < md.index("prebuilt==1.1.3")

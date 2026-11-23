@@ -1,4 +1,4 @@
-"""Metadata filters (file name, folder, modification date) and their Qdrant translation."""
+"""Metadata filters (file name, folder, document date) and their Qdrant translation."""
 
 from __future__ import annotations
 
@@ -14,11 +14,12 @@ from qdrant_client import models
 class SearchFilters:
     file_names: tuple[str, ...] = ()
     folder: Path | None = None  # matches this folder and everything below it
-    modified_after: datetime | None = None
-    modified_before: datetime | None = None
+    # Document date (from file name, else opening text, else modification time), inclusive bounds.
+    date_after: datetime | None = None
+    date_before: datetime | None = None
 
     def is_empty(self) -> bool:
-        return not (self.file_names or self.folder or self.modified_after or self.modified_before)
+        return not (self.file_names or self.folder or self.date_after or self.date_before)
 
 
 def to_qdrant_filter(filters: SearchFilters | None, *, folders: Sequence[str]) -> models.Filter | None:
@@ -35,13 +36,13 @@ def to_qdrant_filter(filters: SearchFilters | None, *, folders: Sequence[str]) -
         # An unknown folder must match nothing; an empty condition list would match everything.
         targets = list(folders) or [str(filters.folder)]
         must.append(models.FieldCondition(key="folder", match=models.MatchAny(any=targets)))
-    if filters.modified_after or filters.modified_before:
+    if filters.date_after or filters.date_before:
         must.append(
             models.FieldCondition(
-                key="file_mtime",
+                key="doc_date_ts",
                 range=models.Range(
-                    gte=filters.modified_after.timestamp() if filters.modified_after else None,
-                    lte=filters.modified_before.timestamp() if filters.modified_before else None,
+                    gte=filters.date_after.timestamp() if filters.date_after else None,
+                    lte=filters.date_before.timestamp() if filters.date_before else None,
                 ),
             )
         )

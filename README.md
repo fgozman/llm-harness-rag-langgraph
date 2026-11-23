@@ -44,6 +44,9 @@ uv run rag search "risk factors" --folder data/docs/sec --file report.pdf --afte
 uv run rag search "..." --show-context                            # print the parent passages sent to the LLM
 ```
 
+Date filters use each document's date: taken from the file name (e.g. `report_2026-11-04.pdf`), else from the
+first date written near the start of the document, else the file's modification time.
+
 Hybrid search fuses dense (Qwen3-Embedding) and BM25 rankings with Reciprocal Rank Fusion, reranks the top
 candidates with Qwen3-Reranker, then expands child chunks to their parent sections within a token budget.
 Latency benchmark: `uv run python scripts/bench_retrieval.py`.

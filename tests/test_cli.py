@@ -53,3 +53,35 @@ def test_doctor_passes_against_running_services(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.chdir(Path(__file__).resolve().parents[1])
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0, result.output
+
+
+class RecordingPipeline:
+    def __init__(self) -> None:
+        self.kwargs: dict[str, object] = {}
+
+    def run(self, root: Path, **kwargs: object) -> object:
+        from rag.ingestion.pipeline import IngestStats
+
+        self.kwargs = kwargs
+        return IngestStats()
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        ([], {"force": False, "retry_failed": False}),
+        (["--force", "--retry-failed"], {"force": True, "retry_failed": True}),
+    ],
+)
+def test_ingest_passes_flags_to_the_pipeline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, flags: list[str], expected: dict[str, bool]
+) -> None:
+    pipeline = RecordingPipeline()
+
+    def fake_build(settings: object) -> RecordingPipeline:
+        return pipeline
+
+    monkeypatch.setattr("rag.factory.build_ingestion_pipeline", fake_build)
+    result = runner.invoke(app, ["ingest", str(tmp_path), "--no-contextualize", *flags])
+    assert result.exit_code == 0, result.output
+    assert {k: pipeline.kwargs[k] for k in expected} == expected

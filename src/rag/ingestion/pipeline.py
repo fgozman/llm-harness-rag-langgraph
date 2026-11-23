@@ -13,6 +13,7 @@ from typing import Protocol
 from rag.config import ChunkingSettings, IngestionSettings
 from rag.ingestion.chunking import TokenCounter, chunk_document
 from rag.ingestion.contextualize import Contextualizer
+from rag.ingestion.dates import CONTENT_WINDOW_CHARS, DocumentDate, infer_document_date
 from rag.ingestion.discovery import DiscoveredFile, discover
 from rag.ingestion.manifest import Manifest
 from rag.ingestion.models import Chunk, ParentSection, ParsedDocument
@@ -50,6 +51,18 @@ class _Prepared:
     doc: ParsedDocument
     parents: list[ParentSection]
     chunks: list[Chunk]
+    doc_date: DocumentDate
+
+
+def _opening_text(doc: ParsedDocument) -> str:
+    parts: list[str] = []
+    size = 0
+    for block in doc.blocks:
+        if size >= CONTENT_WINDOW_CHARS:
+            break
+        parts.append(block.text)
+        size += len(block.text) + 1
+    return "\n".join(parts)
 
 
 ProgressCallback = Callable[[str, int], None]
@@ -150,7 +163,8 @@ class IngestionPipeline:
             stats.failed += 1
             stats.failures[str(file.path)] = error
             return None
-        return _Prepared(file, doc, parents, chunks)
+        doc_date = infer_document_date(file.path.name, _opening_text(doc), file.mtime)
+        return _Prepared(file, doc, parents, chunks, doc_date)
 
     def _contextualize(self, prepared: list[_Prepared], stats: IngestStats) -> list[_Prepared]:
         assert self._contextualizer is not None
@@ -162,7 +176,7 @@ class IngestionPipeline:
         stats.contextualize_failures += result.failed_chunks
         stats.llm_cost_usd += result.cost_usd
         return [
-            _Prepared(p.file, p.doc, p.parents, chunks)
+            _Prepared(p.file, p.doc, p.parents, chunks, p.doc_date)
             for p, chunks in zip(prepared, result.chunks, strict=True)
         ]
 
@@ -207,6 +221,10 @@ class IngestionPipeline:
             "parent_id": chunk.parent_id,
             "content_hash": item.file.content_hash,
             "file_mtime": item.file.mtime,
+            # Issue date for date filters: from the file name, else the opening text, else mtime.
+            "doc_date": item.doc_date.value.isoformat(),
+            "doc_date_source": item.doc_date.source,
+            "doc_date_ts": item.doc_date.timestamp,
             "ingested_at": ingested_at,
             "language": self._ingestion.language,
             "parser": item.doc.parser,

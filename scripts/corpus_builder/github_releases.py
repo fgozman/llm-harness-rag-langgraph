@@ -45,9 +45,12 @@ def parse_releases(page: Sequence[dict[str, Any]], *, since: date) -> tuple[list
 
 
 def render_release_notes(repo: str, releases: Sequence[Release], *, since: date, license_id: str) -> str:
+    newest = max((r.published for r in releases), default=since)
     lines = [
-        f"# {repo} release notes since {since.isoformat()}",
+        f"# {repo} release notes",
         "",
+        # Newest date first: document-date inference reads the first date in the text.
+        f"Last updated {newest.isoformat()}; covers releases since {since.isoformat()}.",
         f"Source: https://github.com/{repo}/releases (license: {license_id}).",
         "",
     ]

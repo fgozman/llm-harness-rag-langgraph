@@ -208,6 +208,28 @@ Phase 1:
   failed). Recommend rotating it.
 - HF downloads are unauthenticated (rate-limit warning); optional `HF_TOKEN` in `.env` speeds them up.
 
+## Document dates (user decision, 2026-11-23)
+
+"If the name or the content of the document does not suggest a date, use the file's modification date."
+- `ingestion/dates.py` (test-first, 21 tests): name → full dates (`2026-11-04`, `20260926`, `2026_11_04`,
+  `2026.03.15`) or year-month (`2026-09` → day 1); several dates in a name → the latest (issue date, e.g. filing date
+  after the period end). Else the first written/ISO date in the opening ~3,000 characters ("November 19, 2026",
+  "Nov. 4, 2026", "5 Aug 2026", "3rd March 2026", "2026-11-20", and capitalised "November 2026" → day 1);
+  compact digit runs are ignored in content (IDs).
+  Invalid calendar dates are skipped. Else the file's mtime (UTC date).
+- Payload: `doc_date` (ISO), `doc_date_source` (name|content|mtime), `doc_date_ts` (float, payload-indexed);
+  `--after/--before` and `SearchFilters.date_after/date_before` now filter on `doc_date_ts`. Missing payload
+  indexes are added to existing collections automatically. Existing collections need `rag ingest --force` once.
+- Test corpus result: SEC 40/40 from name; Federal Register 10/10, GAO 10/10 (cover "November 2026"), release
+  notes 3/3 (header now states "Last updated <newest release>" first) from content; arXiv 5 content / 25 mtime
+  (no date in name or opening text; the ID's YYMM is an arXiv convention, not treated as a date); canary 1 name,
+  1 content, 2 mtime. First pass lacked month-year support (GAO fell back to mtime 8/10, a deck was dated by a
+  future milestone) — fixed test-first. Re-index: full `--force` 21 min; later fixes re-indexed only affected
+  folders (`rag ingest data/test_corpus/gao --force`).
+- Bug found while re-indexing: `rag ingest --force` was declared but never passed to the pipeline (a Phase 1
+  scripted edit silently missed the reformatted call; the pipeline-level test passed, nothing covered the CLI).
+  Fixed, with a CLI test that pins flag passthrough (`--force`, `--retry-failed`).
+
 ## Next (Phase 3 — LangGraph pipeline)
 
 - Verify against installed docs: langgraph 1.2.x StateGraph / conditional edges / SQLite checkpointer package,
@@ -235,6 +257,4 @@ Phase 1:
 ## Open questions
 
 1. OpenAI enrichment is untested against the live API (no `OPENAI_API_KEY`).
-2. Date filters use file modification time, because documents carry no reliable publication date in the payload
-   (for the test corpus mtime = download time). Should ingestion extract a document date (PDF/DOCX metadata, SEC
-   period, Federal Register date) into the payload so "documents from Q3 2026" can filter on it? Needs a re-index.
+

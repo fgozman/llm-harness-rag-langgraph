@@ -115,7 +115,10 @@ def ingest(
             "indexed": bar.add_task("index", total=None),
         }
         stats = pipeline.run(
-            root, retry_failed=retry_failed, progress=lambda stage, n: bar.advance(tasks[stage], n)
+            root,
+            retry_failed=retry_failed,
+            force=force,
+            progress=lambda stage, n: bar.advance(tasks[stage], n),
         )
     _print_ingest_summary(stats, contextualized=settings.ingestion.contextualize)
 
@@ -154,8 +157,11 @@ def search(
     rerank: Annotated[bool, typer.Option("--rerank/--no-rerank")] = True,
     file: Annotated[list[str] | None, typer.Option(help="Restrict to file name(s).")] = None,
     folder: Annotated[Path | None, typer.Option(help="Restrict to a folder (and subfolders).")] = None,
-    after: Annotated[datetime | None, typer.Option(help="Files modified on/after (YYYY-MM-DD).")] = None,
-    before: Annotated[datetime | None, typer.Option(help="Files modified on/before (YYYY-MM-DD).")] = None,
+    after: Annotated[
+        datetime | None,
+        typer.Option(help="Document date on/after (YYYY-MM-DD; from name, content, else mtime)."),
+    ] = None,
+    before: Annotated[datetime | None, typer.Option(help="Document date on/before (YYYY-MM-DD).")] = None,
     show_context: Annotated[bool, typer.Option(help="Print the expanded passages sent to the LLM.")] = False,
 ) -> None:
     """Retrieve and print ranked chunks with scores and sources."""
@@ -166,8 +172,9 @@ def search(
     filters = SearchFilters(
         file_names=tuple(file or ()),
         folder=folder.resolve() if folder else None,
-        modified_after=after.astimezone(UTC) if after else None,
-        modified_before=before.astimezone(UTC) if before else None,
+        # CLI dates are calendar days: compare in UTC like the stored document dates.
+        date_after=after.replace(tzinfo=UTC) if after else None,
+        date_before=before.replace(tzinfo=UTC) if before else None,
     )
     retriever = build_retriever(get_settings())
     result = retriever.retrieve(
