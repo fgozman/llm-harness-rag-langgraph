@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -16,6 +17,7 @@ from rag.config import Settings, get_settings
 
 if TYPE_CHECKING:
     from rag.ingestion.pipeline import IngestStats
+    from rag.retrieval.retriever import RetrievalResult, SearchMode
 
 app = typer.Typer(help="RAG over a local document folder.", no_args_is_help=True)
 console = Console()
@@ -142,3 +144,74 @@ def _print_ingest_summary(stats: IngestStats, *, contextualized: bool) -> None:
     console.print(table)
     for path, error in stats.failures.items():
         console.print(f"[yellow]failed:[/yellow] {path}: {error}")
+
+
+@app.command()
+def search(
+    query: Annotated[list[str], typer.Argument(help="Query; extra arguments are fused as query variants.")],
+    top_k: Annotated[int | None, typer.Option("--top-k", "-k", help="Results to keep.")] = None,
+    mode: Annotated[str | None, typer.Option(help="hybrid | dense | sparse")] = None,
+    rerank: Annotated[bool, typer.Option("--rerank/--no-rerank")] = True,
+    file: Annotated[list[str] | None, typer.Option(help="Restrict to file name(s).")] = None,
+    folder: Annotated[Path | None, typer.Option(help="Restrict to a folder (and subfolders).")] = None,
+    after: Annotated[datetime | None, typer.Option(help="Files modified on/after (YYYY-MM-DD).")] = None,
+    before: Annotated[datetime | None, typer.Option(help="Files modified on/before (YYYY-MM-DD).")] = None,
+    show_context: Annotated[bool, typer.Option(help="Print the expanded passages sent to the LLM.")] = False,
+) -> None:
+    """Retrieve and print ranked chunks with scores and sources."""
+    from rag.factory import build_retriever
+    from rag.retrieval.filters import SearchFilters
+
+    search_mode = _search_mode(mode)
+    filters = SearchFilters(
+        file_names=tuple(file or ()),
+        folder=folder.resolve() if folder else None,
+        modified_after=after.astimezone(UTC) if after else None,
+        modified_before=before.astimezone(UTC) if before else None,
+    )
+    retriever = build_retriever(get_settings())
+    result = retriever.retrieve(
+        query,
+        filters=None if filters.is_empty() else filters,
+        mode=search_mode,
+        rerank=rerank,
+        top_k=top_k,
+    )
+    _print_search(result, show_context=show_context)
+
+
+_SEARCH_MODES: dict[str, SearchMode] = {"hybrid": "hybrid", "dense": "dense", "sparse": "sparse"}
+
+
+def _search_mode(mode: str | None) -> SearchMode | None:
+    if mode is None:
+        return None
+    if mode not in _SEARCH_MODES:
+        raise typer.BadParameter("mode must be hybrid, dense or sparse")
+    return _SEARCH_MODES[mode]
+
+
+def _print_search(result: RetrievalResult, *, show_context: bool) -> None:
+    from rag.retrieval.types import payload_section
+
+    table = Table(
+        "#", "score", "rrf", "file", "pages", "section", "snippet", title=" | ".join(result.queries)
+    )
+    for rank, c in enumerate(result.ranked, start=1):
+        p = c.payload
+        start, end = p.get("page_start"), p.get("page_end")
+        pages = "" if start is None else (f"{start}" if start == end else f"{start}-{end}")
+        section = " > ".join(payload_section(p))
+        snippet = " ".join(str(p.get("text", "")).split())[:120]
+        score = f"{c.rerank_score:.3f}" if c.rerank_score is not None else "-"
+        table.add_row(
+            str(rank), score, f"{c.fused_score:.4f}", str(p.get("file_name")), pages, section[:40], snippet
+        )
+    console.print(table)
+    timing = ", ".join(f"{k} {v:.0f} ms" for k, v in result.timings_ms.items())
+    console.print(f"[dim]{len(result.candidates)} candidates; {timing}[/dim]")
+    if show_context:
+        for passage in result.passages:
+            where = f"{passage.file_name} p.{passage.page_start}" if passage.page_start else passage.file_name
+            console.rule(f"[{passage.index}] {where} — {' > '.join(passage.section_path)}")
+            console.print(passage.text)

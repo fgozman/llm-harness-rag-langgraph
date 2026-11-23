@@ -23,8 +23,17 @@ embedding:
   query_instruction: Given a question about a document collection, retrieve relevant passages that answer the question
 
 reranker:
+  enabled: true
+  # model and candidates default from the hardware profile.
   fallback_model: BAAI/bge-reranker-v2-m3
   top_k: 6
+  batch_size: 8
+
+retrieval:
+  mode: hybrid                 # hybrid | dense | sparse
+  candidates_per_ranking: 50
+  rrf_k: 60
+  context_token_budget: 12000
 
 qdrant:
   url: http://localhost:6333
@@ -57,7 +66,6 @@ graph:
   max_rewrite_retries: 2
   max_regenerations: 1
   min_relevant_passages: 2
-  context_token_budget: 12000
   max_query_variants: 4
 
 # Test corpus sources: scripts/corpus_sources.yaml (SEC contact email: CORPUS__SEC_USER_AGENT_EMAIL in .env).

@@ -26,6 +26,7 @@ def test_defaults_use_mac_profile() -> None:
     assert s.embedding.model == "Qwen/Qwen3-Embedding-0.6B"
     assert s.reranker.model == "Qwen/Qwen3-Reranker-0.6B"
     assert s.reranker.fallback_model == "BAAI/bge-reranker-v2-m3"
+    assert s.reranker.candidates == 20
     assert s.device == "auto"
     assert s.dtype == "float16"
 

@@ -147,6 +147,16 @@ class Manifest:
                 conn.execute("DELETE FROM parents WHERE doc_id = ?", (row["doc_id"],))
             conn.execute("DELETE FROM files WHERE path = ?", (str(path),))
 
+    def folders_under(self, prefix: Path) -> list[str]:
+        """Distinct folders of indexed files at or below `prefix` (for folder filters)."""
+        prefix = prefix.resolve()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT path FROM files WHERE status = ?", (FileStatus.INDEXED.value,)
+            ).fetchall()
+        parents = {Path(r["path"]).parent for r in rows}
+        return sorted(str(p) for p in parents if p == prefix or p.is_relative_to(prefix))
+
     def get_parents(self, parent_ids: Sequence[str]) -> dict[str, ParentSection]:
         if not parent_ids:
             return {}

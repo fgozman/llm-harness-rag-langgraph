@@ -10,8 +10,61 @@ Read `SPEC.md` and `PLAN.md` first after any context reset.
 | 1 — Ingestion | ✅ done (2026-11-22) |
 | Enrichment for OpenAI/Ollama | ✅ done (2026-11-22) |
 | Test corpus (Section 2) | ✅ built (97 docs, incl. 10 full GAO PDFs); golden Q&A set is Phase 5 |
-| 2 — Retrieval | ⏭ next |
-| 3–6 | not started |
+| 2 — Retrieval | ✅ done (2026-11-23) |
+| 3 — LangGraph pipeline | ⏭ next |
+| 4–6 | not started |
+
+## Phase 2 — done
+
+Modules (`src/rag/retrieval/`): `fusion.py` (RRF), `filters.py` (file name / folder / modified-date → Qdrant),
+`qdrant_search.py` (hybrid searcher), `rerank.py` (Qwen3 + cross-encoder), `context.py` (parent expansion, dedup,
+token budget), `retriever.py` (orchestration + timings); `factory.build_retriever/build_reranker`;
+CLI `rag search QUERY [VARIANTS…] [-k] [--mode hybrid|dense|sparse] [--no-rerank] [--file] [--folder] [--after]
+[--before] [--show-context]`; `scripts/bench_retrieval.py`.
+
+Acceptance (all executed):
+- `rag search` prints ranked chunks with rerank score, RRF score, file, pages, section, snippet + timings.
+- Hybrid beats dense-only (`tests/test_retrieval_integration.py`, fixture `tests/fixtures/retrieval/valve_catalog.md`:
+  12 near-identical sections differing only in codes). Over 24 keyword-heavy questions (part code; seal-kit number):
+  hybrid is never worse than dense on any question, MRR 0.958 vs 0.931, top-1 22 vs 21; with the reranker 24/24.
+- Qwen3-Reranker reproduces the model-card example (0.9995 vs 1e-5); prompt pieces pinned verbatim in a unit test.
+- **Rerank latency (Mac profile, M1 Max, test corpus 8,684 chunks, warm, 20 queries × 2):**
+  20 candidates → search p50 61 ms, rerank p50 2,743 ms / p95 3,093 ms, **retrieve+rerank p50 2,820 ms /
+  p95 3,172 ms** (target ~3 s: met at p50, p95 marginally over). Rerank cost ≈ 140 ms per candidate.
+  Runs at 25/30 candidates were contaminated by system swapping (search time rose from 61 ms to ~500 ms although it
+  doesn't depend on candidate count) and are not reported as results; extrapolated ≈ 3.5 s / 4.2 s.
+  ⇒ Mac profile default rerank candidates changed 25 → **20** (spec range 20–30).
+- Unit: RRF (scores, tie-break, dedup), context budgeting (parent expansion, sibling dedup, fallbacks, budget),
+  retriever orchestration with fakes, filter translation, manifest folder lookup — all written test-first.
+- `make check` green: 184 unit tests in ~3.4 s; integration (non-slow): 16 pass.
+
+Decisions:
+- **Client-side RRF** over all rankings (dense & sparse × every query variant) from one batched Qdrant call
+  (`query_batch_points`), instead of Qdrant server-side fusion: one tested fusion path for hybrid and multi-query,
+  and dense-only / sparse-only modes for comparisons. k = 60, 50 hits per ranking.
+- Reranker input = "title > section" + contextual blurb + chunk text (mirrors the embedded text). The first query
+  (standalone question) drives reranking when several variants are fused.
+- Qwen3 reranker follows the model card exactly (prefix/suffix, `<Instruct>/<Query>/<Document>`, P(yes) via
+  log-softmax over yes/no logits, left padding); only deviation: the card's `max_length` argument to
+  `tokenizer.pad()` is dropped (ignored with `padding=True`, only emitted a warning). Instruction text is
+  configurable. Falls back to `BAAI/bge-reranker-v2-m3` if the configured model fails to load.
+- Context: children grouped by parent in rank order; whole parent if it fits the budget, else the group's children
+  in document order, else the best child; oversized groups are skipped so smaller lower-ranked passages can fit.
+  Budget default 12,000 tokens (`retrieval.context_token_budget`, moved from graph settings).
+- Folder filter resolves the prefix to indexed folders via the manifest (`MatchAny`), so no payload change or
+  re-index was needed; unknown folder ⇒ matches nothing. Date filter = file modification time (see open questions).
+
+Findings for later phases:
+- Temporal hard negatives work as intended: "Uber revenue for the quarter ended Sep 30, 2026" ranks the *pre-cutoff*
+  Q1 10-Q first after reranking (scores saturate near 1.0 across Uber filings); the correct 8-K/10-Q are in the
+  top 6. Contextual enrichment (not applied to `test_corpus`) and Phase 5 evals should measure the fix.
+- Equal-weight RRF lets dense pull exact BM25 matches down on rare identifiers (kit-number questions: sparse 12/12
+  top-1, hybrid 10/12); the reranker repairs it. Candidate for `rag compare` (weighted RRF).
+- GAO parsing: the "U.S. GOVERNMENT ACCOUNTABILITY OFFICE" heading is the one-time letterhead before the report
+  letter (not a running header), so chunks under it are the letter intro — acceptable. Side-heading layouts become
+  2-column tables but keep all text and split only on rows. No change made.
+- Environment: Docker restarted overnight (data persisted in volumes); the machine swaps heavily when Firefox +
+  Docker VM + other containers are active, which multiplies model latency 2–8×.
 
 ## Test corpus — done
 
@@ -155,7 +208,15 @@ Phase 1:
   failed). Recommend rotating it.
 - HF downloads are unauthenticated (rate-limit warning); optional `HF_TOKEN` in `.env` speeds them up.
 
-## Next (Phase 2 — Retrieval)
+## Next (Phase 3 — LangGraph pipeline)
+
+- Verify against installed docs: langgraph 1.2.x StateGraph / conditional edges / SQLite checkpointer package,
+  streaming API; Anthropic structured outputs (native JSON schema via `output_config.format`, no forced tool use on
+  Sonnet 5.5, no sampling params), thinking blocks not shared across models.
+- Test-first: every routing edge and loop cap with a fake LLM; citation mapping.
+- Query-time metadata filter extraction (file/folder/date) belongs to `analyze_query`/`rewrite_query`.
+
+## Phase 2 notes (kept for reference)
 
 - The full test corpus is indexed (no contextualization) in collection `test_corpus`, state dir `.rag/test_corpus`:
   97 docs, 8,684 chunks, 0 parse failures — use it for Phase 2 benchmarks (rerank latency p50/p95). Adding the GAO
@@ -174,3 +235,6 @@ Phase 1:
 ## Open questions
 
 1. OpenAI enrichment is untested against the live API (no `OPENAI_API_KEY`).
+2. Date filters use file modification time, because documents carry no reliable publication date in the payload
+   (for the test corpus mtime = download time). Should ingestion extract a document date (PDF/DOCX metadata, SEC
+   period, Federal Register date) into the payload so "documents from Q3 2026" can filter on it? Needs a re-index.

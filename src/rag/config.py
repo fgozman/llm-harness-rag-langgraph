@@ -48,7 +48,9 @@ PROFILE_DEFAULTS: dict[HardwareProfile, _ProfileDefaults] = {
         # Measured on M1 Max: ~10 chunks/s at 500 tokens for batch 8-64; 16 is peak speed at ~3 GiB.
         embedding_batch_size=16,
         reranker_model="Qwen/Qwen3-Reranker-0.6B",
-        rerank_candidates=25,
+        # Measured on M1 Max (test corpus, warm): 20 candidates -> retrieve+rerank p50 2.8 s / p95 3.2 s;
+        # rerank cost is ~140 ms per candidate, so 25-30 would exceed the ~3 s budget.
+        rerank_candidates=20,
         dtype="float16",
     ),
     HardwareProfile.GPU: _ProfileDefaults(
@@ -155,10 +157,24 @@ class EmbeddingSettings(BaseModel):
 
 
 class RerankerSettings(BaseModel):
+    enabled: bool = True
     model: str | None = None
     fallback_model: str = "BAAI/bge-reranker-v2-m3"
+    # How many fused candidates are reranked (latency scales linearly with this).
     candidates: int | None = Field(default=None, ge=1)
     top_k: int = Field(default=6, ge=1)
+    batch_size: int = Field(default=8, ge=1)
+    max_length: int = Field(default=8192, ge=256)
+    # Qwen3-Reranker <Instruct> text (model-card format); ignored by classic cross-encoders.
+    instruction: str = "Given a question, judge whether the passage contains information that answers it"
+
+
+class RetrievalSettings(BaseModel):
+    mode: Literal["hybrid", "dense", "sparse"] = "hybrid"
+    # Hits fetched per ranking (each vector type x each query variant) before fusion.
+    candidates_per_ranking: int = Field(default=50, ge=1)
+    rrf_k: int = Field(default=60, ge=1)
+    context_token_budget: int = Field(default=12_000, ge=500)
 
 
 class QdrantSettings(BaseModel):
@@ -211,7 +227,6 @@ class GraphSettings(BaseModel):
     max_rewrite_retries: int = Field(default=2, ge=0)
     max_regenerations: int = Field(default=1, ge=0)
     min_relevant_passages: int = Field(default=2, ge=1)
-    context_token_budget: int = Field(default=12_000, ge=1000)
     max_query_variants: int = Field(default=4, ge=1, le=4)
 
 
@@ -244,6 +259,7 @@ class Settings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     reranker: RerankerSettings = Field(default_factory=RerankerSettings)
+    retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     qdrant: QdrantSettings = Field(default_factory=QdrantSettings)
     phoenix: PhoenixSettings = Field(default_factory=PhoenixSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)

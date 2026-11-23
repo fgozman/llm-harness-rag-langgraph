@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from functools import cache
 
 import anthropic
@@ -16,6 +17,11 @@ from rag.ingestion.manifest import Manifest
 from rag.ingestion.parsing import DocumentParser
 from rag.ingestion.pipeline import IngestionPipeline
 from rag.retrieval.qdrant_index import QdrantChunkIndex
+from rag.retrieval.qdrant_search import QdrantHybridSearcher
+from rag.retrieval.rerank import CrossEncoderReranker, Qwen3Reranker, is_qwen3_reranker
+from rag.retrieval.retriever import Reranker, Retriever
+
+log = logging.getLogger(__name__)
 
 
 class ConfigurationError(RuntimeError):
@@ -44,6 +50,62 @@ def sparse_embedder(model: str) -> Bm25SparseEmbedder:
 @cache
 def token_counter(model: str) -> HFTokenCounter:
     return HFTokenCounter(model)
+
+
+@cache
+def reranker_model(
+    model: str, device: Device, dtype: DType, batch_size: int, max_length: int, instruction: str
+) -> Reranker:
+    if is_qwen3_reranker(model):
+        return Qwen3Reranker(
+            model,
+            device=device,
+            dtype=dtype,
+            batch_size=batch_size,
+            max_length=max_length,
+            instruction=instruction,
+        )
+    return CrossEncoderReranker(
+        model, device=device, dtype=dtype, batch_size=batch_size, max_length=max_length
+    )
+
+
+def build_reranker(settings: Settings) -> Reranker | None:
+    r = settings.reranker
+    if not r.enabled:
+        return None
+    assert r.model is not None and settings.dtype is not None  # filled from the hardware profile
+    try:
+        return reranker_model(
+            r.model, settings.device, settings.dtype, r.batch_size, r.max_length, r.instruction
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        # Spec: bge-reranker-v2-m3 is the fallback when the Qwen3 reranker can't be loaded on this machine.
+        log.warning("reranker %s failed to load (%s); falling back to %s", r.model, exc, r.fallback_model)
+        return reranker_model(
+            r.fallback_model, settings.device, settings.dtype, r.batch_size, r.max_length, r.instruction
+        )
+
+
+def build_retriever(settings: Settings) -> Retriever:
+    assert settings.embedding.model is not None
+    manifest = build_manifest(settings)
+    index = build_index(settings)
+    searcher = QdrantHybridSearcher(
+        index.client,
+        index.collection,
+        dense=build_dense(settings),
+        sparse=sparse_embedder(settings.qdrant.sparse_model),
+        folders_under=manifest.folders_under,
+    )
+    return Retriever(
+        searcher=searcher,
+        reranker=build_reranker(settings),
+        parents=manifest,
+        count_tokens=token_counter(settings.embedding.model),
+        retrieval=settings.retrieval,
+        reranker_settings=settings.reranker,
+    )
 
 
 def build_dense(settings: Settings) -> QwenDenseEmbedder:

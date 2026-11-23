@@ -35,6 +35,19 @@ Contextual enrichment uses the configured provider's cheap model: Anthropic (pro
 Message Batches API for large runs), OpenAI or a local Ollama model (Responses API, synchronous).
 Set `LLM__PROVIDER=openai|ollama` and optionally `LLM__CHEAP_MODEL`.
 
+## Searching
+
+```bash
+uv run rag search "What was Uber's revenue in Q3 2026?"          # hybrid + rerank, top 6
+uv run rag search "seal kit K-2219-B" --mode sparse --no-rerank   # compare retrieval modes
+uv run rag search "risk factors" --folder data/docs/sec --file report.pdf --after 2026-07-01
+uv run rag search "..." --show-context                            # print the parent passages sent to the LLM
+```
+
+Hybrid search fuses dense (Qwen3-Embedding) and BM25 rankings with Reciprocal Rank Fusion, reranks the top
+candidates with Qwen3-Reranker, then expands child chunks to their parent sections within a token budget.
+Latency benchmark: `uv run python scripts/bench_retrieval.py`.
+
 ## Test corpus (post-cutoff documents for evaluation)
 
 ```bash

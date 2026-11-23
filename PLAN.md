@@ -47,7 +47,8 @@ src/rag/
   embeddings.py        Qwen3 dense embedder, BM25 sparse embedder, token counter
   factory.py           builds components from settings; models cached once per process
   ingestion/           models, discovery, manifest (+parent docstore), parsing, chunking, contextualize, pipeline
-  retrieval/           types (shared protocols), qdrant_index; Phase 2 adds hybrid search, rrf, rerank, budget
+  retrieval/           types, qdrant_index (write), qdrant_search (hybrid read), fusion (RRF), filters, rerank,
+                       context (parent expansion + budget), retriever (orchestration)
   llm/                 provider factory, structured output helpers (Phase 3)
   prompts/             versioned prompts (Phase 3)
   graph/               state.py, nodes/, edges.py, build.py (Phase 3)
@@ -66,7 +67,7 @@ Subpackages are created in the phase that fills them (no empty stubs).
 - [x] **Phase 1 — Ingestion**: discovery, SQLite manifest (incremental, idempotent), Docling + fallback, structure-aware
       chunking with parent/child, contextual enrichment flag, dense + sparse indexing. Test-first for manifest + chunker.
       Check: ingest fixtures; re-run no-op; modify one file → only it re-indexed; delete → chunks removed.
-- [ ] **Phase 2 — Retrieval**: hybrid + RRF, Qwen3 reranker (model-card usage), parent expansion, dedup, context budget,
+- [x] **Phase 2 — Retrieval**: hybrid + RRF, Qwen3 reranker (model-card usage), parent expansion, dedup, context budget,
       metadata filters, `rag search`. Check: hybrid beats dense-only on exact-code query; rerank p50/p95 on mac in PROGRESS.
 - [x] **Test corpus** (Section 2): `scripts/build_test_corpus.py` + `scripts/corpus_builder/` (GAO: highlights only).
 - [ ] **Phase 3 — LangGraph pipeline**: all nodes, routing + loop caps (test-first w/ fake LLM), checkpointer, streaming,
