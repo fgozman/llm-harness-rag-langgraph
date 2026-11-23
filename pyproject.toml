@@ -11,6 +11,7 @@ dependencies = [
     "arize-phoenix-client>=3.7.0",
     "arize-phoenix-otel>=0.17.3",
     "docling>=2.151.1",
+    "fastapi>=0.165.0",
     "fastembed>=0.9.1",
     "httpx>=0.28.1",
     "langchain-core>=1.8.4",
@@ -30,6 +31,7 @@ dependencies = [
     "torch>=2.15.0",
     "transformers>=5.24.0",
     "typer>=0.19.0",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
@@ -76,7 +78,7 @@ max-args = 10
 [tool.pyright]
 pythonVersion = "3.12"
 include = ["src", "tests", "scripts"]
-extraPaths = ["scripts"]
+extraPaths = ["scripts", "tests"]
 # Fixture generator drives untyped office/PDF libraries; it is a dev script, not product code.
 exclude = ["tests/fixtures"]
 typeCheckingMode = "strict"

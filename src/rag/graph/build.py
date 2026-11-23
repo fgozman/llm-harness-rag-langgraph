@@ -22,9 +22,11 @@ from openinference.instrumentation import using_attributes
 from openinference.instrumentation.langchain import LangChainInstrumentor, get_current_span
 from opentelemetry import trace
 
+from rag import logs
 from rag.graph.edges import route_after_analyze, route_after_check, route_after_generate, route_after_grade
 from rag.graph.nodes import GraphDeps, Nodes
 from rag.graph.state import STATE_MODELS, GraphState, Turn
+from rag.graph.stream import TurnStream
 from rag.prompts import analyze, check, generate, grade, rewrite
 
 PROMPT_VERSIONS = {
@@ -35,7 +37,7 @@ PROMPT_VERSIONS = {
     "check": check.VERSION,
 }
 
-__all__ = ["GraphDeps", "build_checkpointer", "build_graph", "run_turn", "state_serializer"]
+__all__ = ["GraphDeps", "build_checkpointer", "build_graph", "run_turn", "state_serializer", "turn_stream"]
 
 EventCallback = Callable[[dict[str, Any]], None]
 
@@ -145,3 +147,25 @@ def run_turn(
                 for node in chunk:
                     on_event({"type": "node", "node": str(node)})
     return dict(graph.get_state(config).values)
+
+
+def turn_stream(
+    graph: CompiledStateGraph[Any],
+    question: str,
+    *,
+    thread_id: str,
+    timeout_s: float,
+    user_id: str = "",
+    metadata: dict[str, Any] | None = None,
+    on_finish: Callable[[], None] | None = None,
+) -> TurnStream:
+    """`run_turn` in a worker thread with an end-to-end deadline; iterate `.events()`, then read `.result`."""
+
+    def run(on_event: EventCallback) -> dict[str, Any]:
+        # Bound inside the worker: log lines of the graph's nodes carry the conversation id.
+        with logs.bind(thread_id=thread_id):
+            return run_turn(
+                graph, question, thread_id=thread_id, on_event=on_event, user_id=user_id, metadata=metadata
+            )
+
+    return TurnStream(run, timeout_s=timeout_s, on_finish=on_finish)

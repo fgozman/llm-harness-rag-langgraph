@@ -14,7 +14,72 @@ Read `SPEC.md` and `PLAN.md` first after any context reset.
 | 3 — LangGraph pipeline | ✅ done (2026-11-23) |
 | 4 — Phoenix tracing | ✅ done (2026-11-23) |
 | 5 — Evaluation | ✅ done (2026-11-23) — golden set awaiting human review |
-| 6 — API + hardening | ⏭ next |
+| 6 — API + hardening | ✅ done (2026-11-23) |
+
+## Phase 6 — done
+
+Code: `src/rag/api/` (`app.py` FastAPI app + routes, `schemas.py`, `jobs.py` background ingest jobs),
+`graph/stream.py` (`TurnStream`: a turn in a worker thread with an end-to-end deadline + cooperative
+cancellation), `graph/build.turn_stream`, `logs.py` (text/JSON logging, contextvar-bound request/thread/job ids),
+`services.py` (probes shared by `rag doctor` and `/health`), `llm/errors.py`, CLI `rag serve`, settings `api.*`,
+`log.*`, `graph.turn_timeout_s`. README rewritten (quick start, Mermaid architecture + graph, CLI, API/SSE
+protocol, configuration reference, tracing, evaluation, development). Added fastapi 0.165.0 (starlette 1.10.0),
+uvicorn 0.54.0. `make check`: 364 unit tests (~7 s). Integration: 22 pass.
+
+API:
+- `POST /ask` → SSE: `status`, `node`, `answer_start`, `token`, then exactly one `final` (thread_id, status, text,
+  citations) or `error` (`timeout` | `llm_error` | `internal_error`, no internals leaked). Headers `X-Thread-ID`,
+  `X-Request-ID`. 409 if the thread is still answering, 429 above `api.max_concurrent_turns`, 422 on invalid input
+  (thread ids restricted to `[A-Za-z0-9_.:-]{1,128}`).
+- `POST /ingest` → 202 + job; `GET /ingest/{id}` (status, progress, stats, error). One job at a time (409); paths
+  resolved under `docs_dir` or `api.ingest_roots`, else 403; per-job `contextualize` override on a settings copy.
+- `GET /health` → 200 ok / 503 degraded (Qdrant required, Phoenix optional), active turns, ingest running.
+
+Acceptance (executed against the running services, test corpus `test_corpus_ctx`):
+- `curl -N POST /ask` streamed 39 token events and ended with `event: final` + citations (Uber Q3 revenue
+  $14,766M vs $13,467M, cited to the 10-Q MD&A and the 8-K), 16 s. Streaming is incremental (follow-up turn: first
+  token 11.5 s, final 17.0 s) and the follow-up on `X-Thread-ID` was rewritten from history ("Uber's net income in
+  Q3 2026").
+- Fresh collection: `POST /ingest` of the fixtures → 7 files / 20 chunks in 4 s, then a cited answer (7.5 kg [PPTX
+  notes], 4,950 EUR [XLSX]). Scratch collection deleted afterwards.
+- Live timeout (`GRAPH__TURN_TIMEOUT_S=4`): `error/timeout` at 4.0 s; thread released once the worker stopped.
+- Live client disconnect: turn logged `outcome=cancelled` under its own request id; same-thread retry → 409 while
+  the abandoned worker finished its in-flight LLM call; next turn on the thread succeeded; 0 ERROR log lines.
+- `rag ask` (CLI) now runs through the same deadline (unit test: timeout exits 1 in < 1 s).
+- Phoenix: API turns are traced with metadata `interface=api`; FastAPI 0.165's native OpenTelemetry spans make
+  `POST /ask` the trace root (→ `fastapi.dependencies` → LangGraph); cancelled turns show as ERROR traces.
+
+Decisions / findings:
+- **Deadline over the whole turn, enforced by the consumer.** The graph is synchronous and threads can't be
+  killed, so the worker runs the graph and pushes events to a queue; the consumer waits with the remaining
+  deadline and on expiry cancels; the worker aborts at its next event (every node/token). A stalled provider call
+  still occupies its worker until the SDK timeout, but the client always gets an answer or a timeout in bounded
+  time (bounds the Phase 3 >15 min hang).
+- **The request-scoped dependency owns the turn** (`Depends(..., scope="request")`): it starts the worker, and its
+  teardown (runs after the response, including disconnects) cancels it and logs `turn finished`. First version
+  cancelled from the SSE generator's `finally`; the live disconnect test showed the abandoned generator is
+  finalised later in another task (1.4 s late), its `logs.bind` reset failed ("created in a different Context")
+  and the `turn finished` line carried the *next* request's id. Contextvars must not be bound across `yield` in
+  async generators; log fields there are explicit now.
+- **The thread slot is released when the worker really exits** (`on_finish`), not when the response ends:
+  otherwise a reconnect could run two workers on one conversation checkpoint.
+- Embedder and rerankers serialise inference with a lock: one model instance per process is shared by concurrent
+  turns and ingest jobs (HF fast tokenizers fail with "Already borrowed" under concurrent use).
+- After a cancelled turn LangGraph's executor is shut down while the abandoned node is still running; when that
+  node finishes, `concurrent.futures` logs "cannot schedule new futures after shutdown". A narrow logging filter
+  drops exactly that record (the turn was already reported as timed out/cancelled).
+- A cancelled turn leaves the user message in the thread history without an answer; the next turn sees it.
+  Acceptable (the rewrite step resolves the new question), noted here.
+- FastAPI's native SSE (`EventSourceResponse`, `ServerSentEvent`) is used instead of sse-starlette; it adds
+  `: ping` keep-alives every 15 s and `X-Accel-Buffering: no`. `/health` is excluded from FastAPI's telemetry.
+- Logging: our own handler (resolves `sys.stderr` at emit time: the CLI runner swaps it); uvicorn runs with
+  `log_config=None` and its access log off (our middleware logs method/path/status/duration with the request id).
+- Test fakes moved from `tests/test_graph.py` to `tests/graph_fakes.py` (shared with API/CLI tests; no assertions
+  changed).
+- Integration run 1 at the phase boundary: `test_rag_ask_works_when_phoenix_is_down` failed once while the whole
+  suite took 12 min (machine swapping, 2.5 GB swap used); the output was not kept. The test passed alone, the
+  tracing file passed, and a full re-run passed 22/22 in 2 min 24 s. Probably its 120 s bound under swapping;
+  not proven. Integration output is now saved to `.rag/logs/integration.log`.
 
 ## Phase 5 — done
 
@@ -405,12 +470,12 @@ Phase 1:
   scripted edit silently missed the reformatted call; the pipeline-level test passed, nothing covered the CLI).
   Fixed, with a CLI test that pins flag passthrough (`--force`, `--retry-failed`).
 
-## Next (Phase 6 — API + hardening)
+## Next
 
-- FastAPI `/ingest`, `/ask` (SSE: status/token events, final citations payload), `/health`; request timeouts
-  (also bounds the once-observed stalled API stream), structured logging; README with Mermaid architecture,
-  configuration reference, eval instructions; `curl` check against `/ask`.
-- Human review of `eval/golden.jsonl` (user), then re-run `rag eval`.
+- All phases are done. Remaining: human review of `eval/golden.jsonl` (user), rewrite the 3 leaky questions, then
+  re-run `rag eval` / `rag compare`; a harder retrieval set (paraphrased, multi-hop) to separate retrievers.
+- Possible hardening beyond the spec: API authentication (currently loopback-only by default), persisting ingest
+  job history across restarts.
 
 ## Phase 2 notes (kept for reference)
 
@@ -430,5 +495,5 @@ Phase 1:
 
 ## Open questions
 
-1. OpenAI enrichment is untested against the live API (no `OPENAI_API_KEY`).
+1. OpenAI enrichment and the OpenAI QA path are untested against the live API (no `OPENAI_API_KEY`).
 

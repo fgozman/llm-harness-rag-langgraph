@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Sequence
 
 from rag import devices  # sets PYTORCH_ENABLE_MPS_FALLBACK / TOKENIZERS_PARALLELISM before torch loads
@@ -57,16 +58,19 @@ class Qwen3Reranker:
         self._batch_size = batch_size
         self._max_length = max_length
         self._instruction = instruction
+        # Shared across request threads; HF fast tokenizers fail ("Already borrowed") under concurrent use.
+        self._lock = threading.Lock()
 
     def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
         pairs = [format_qwen_pair(self._instruction, query, d) for d in documents]
         # Score similar lengths together to minimise padding, then restore input order.
         order = sorted(range(len(pairs)), key=lambda i: len(pairs[i]))
         scores = [0.0] * len(pairs)
-        for start in range(0, len(order), self._batch_size):
-            batch = order[start : start + self._batch_size]
-            for i, score in zip(batch, self._score([pairs[i] for i in batch]), strict=True):
-                scores[i] = score
+        with self._lock:
+            for start in range(0, len(order), self._batch_size):
+                batch = order[start : start + self._batch_size]
+                for i, score in zip(batch, self._score([pairs[i] for i in batch]), strict=True):
+                    scores[i] = score
         return scores
 
     def _score(self, pairs: list[str]) -> list[float]:
@@ -104,11 +108,13 @@ class CrossEncoderReranker:
         )
         self._batch_size = batch_size
         self._sigmoid = torch.nn.Sigmoid()
+        self._lock = threading.Lock()
 
     def rerank(self, query: str, documents: Sequence[str]) -> list[float]:
-        scores = self._model.predict(
-            [(query, d) for d in documents], batch_size=self._batch_size, activation_fn=self._sigmoid
-        )
+        with self._lock:
+            scores = self._model.predict(
+                [(query, d) for d in documents], batch_size=self._batch_size, activation_fn=self._sigmoid
+            )
         return [float(s) for s in scores]
 
 

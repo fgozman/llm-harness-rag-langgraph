@@ -1,10 +1,15 @@
 import socket
+import time
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
+from graph_fakes import THREE, FakeLLM, FakeRetriever, analysis, grades, make, ok, plan
 from rag.cli import app
+from rag.llm.base import Message, TokenCallback
 
 runner = CliRunner()
 
@@ -85,3 +90,50 @@ def test_ingest_passes_flags_to_the_pipeline(
     result = runner.invoke(app, ["ingest", str(tmp_path), "--no-contextualize", *flags])
     assert result.exit_code == 0, result.output
     assert {k: pipeline.kwargs[k] for k in expected} == expected
+
+
+class _SlowLLM(FakeLLM):
+    def generate(
+        self, task: Any, *, system: str, messages: Sequence[Message], on_token: TokenCallback | None = None
+    ) -> str:
+        time.sleep(1.0)
+        return super().generate(task, system=system, messages=messages, on_token=on_token)
+
+
+def _patch_graph(monkeypatch: pytest.MonkeyPatch, llm: FakeLLM) -> None:
+    graph = make(llm, FakeRetriever([THREE]))
+
+    def build(settings: object) -> Any:
+        return graph
+
+    monkeypatch.setattr("rag.factory.build_qa_graph", build)
+
+
+def test_ask_prints_the_answer_and_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_graph(monkeypatch, FakeLLM([analysis(), plan(), grades(True, False, True), ok()], ["Rev 10 [1]."]))
+    result = runner.invoke(app, ["ask", "What was revenue?"])
+    assert result.exit_code == 0, result.output
+    assert "Rev 10 [1]." in result.output
+    assert "a.pdf" in result.output
+
+
+def test_ask_times_out_at_the_turn_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GRAPH__TURN_TIMEOUT_S", "0.3")
+    _patch_graph(monkeypatch, _SlowLLM([analysis(), plan(), grades(True, False, True), ok()], ["late"]))
+    started = time.monotonic()
+    result = runner.invoke(app, ["ask", "What was revenue?"])
+    assert result.exit_code == 1
+    assert "Timed out" in result.output
+    assert time.monotonic() - started < 1.0
+
+
+def test_serve_runs_uvicorn_without_its_own_logging(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def run(app_: object, **kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr("uvicorn.run", run)
+    result = runner.invoke(app, ["serve", "--port", "8123"])
+    assert result.exit_code == 0, result.output
+    assert calls == [{"host": "127.0.0.1", "port": 8123, "log_config": None, "access_log": False}]

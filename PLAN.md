@@ -8,7 +8,7 @@ Status, decisions, and open questions go in `PROGRESS.md`.
 ```mermaid
 flowchart LR
   subgraph Host["Host Python process (native: MPS / CUDA / CPU)"]
-    CLI[Typer CLI / FastAPI] --> ING[Ingestion]
+    CLI[Typer CLI / FastAPI SSE] --> ING[Ingestion]
     CLI --> G[LangGraph query graph]
     ING --> EMB[Embedder Qwen3-Embedding]
     G --> RET[Retrieval: hybrid + RRF]
@@ -41,7 +41,9 @@ flowchart LR
 ```
 src/rag/
   config.py            settings (pydantic-settings: init > env > .env > config.yaml), hardware profiles
-  cli.py               typer: config, doctor, ingest, search, ask, chat, eval, compare
+  cli.py               typer: config, doctor, ingest, search, ask, chat, serve, golden, eval, compare
+  logs.py              text/JSON logging with request/thread ids (contextvars)
+  services.py          Qdrant/Phoenix probes (doctor, /health)
   telemetry.py         Phoenix/OTel setup, OpenInference span helpers
   devices.py           device/dtype detection
   embeddings.py        Qwen3 dense embedder, BM25 sparse embedder, token counter
@@ -51,8 +53,9 @@ src/rag/
                        context (parent expansion + budget), retriever (orchestration)
   llm/                 LLM protocol + native adapters (Anthropic, OpenAI Responses, Ollama chat), schema helper
   prompts/             versioned prompts (analyze, rewrite, grade, generate, check, common delimiters)
-  graph/               state.py, nodes.py, edges.py, citations.py, build.py (graph, checkpointer, run_turn)
-  api/                 FastAPI app (Phase 6)
+  graph/               state.py, nodes.py, edges.py, citations.py, build.py (graph, checkpointer, run_turn),
+                       stream.py (turn in a worker thread: deadline + cancellation)
+  api/                 FastAPI app (/ask SSE, /ingest jobs, /health), schemas, jobs
 src/rag/evaluation/    golden set generation, metrics, evaluators, experiment runner (CLI-importable)
 eval/                  golden.jsonl, canary_facts.jsonl, REVIEW.md, results/ (gitignored reports)
 scripts/               build_test_corpus.py, corpus_sources.yaml, corpus_builder/ (per-source collectors)
@@ -77,4 +80,4 @@ Subpackages are created in the phase that fills them (no empty stubs).
       resilient when Phoenix is down.
 - [x] **Phase 5 — Evaluation**: golden set, Phoenix dataset, experiments + evaluators, `rag eval [--no-retrieval]`,
       `rag compare`, leaky-question flagging, results summary.
-- [ ] **Phase 6 — API + hardening**: FastAPI `/ingest`, `/ask` (SSE), `/health`; timeouts; structured logging; README.
+- [x] **Phase 6 — API + hardening**: FastAPI `/ingest`, `/ask` (SSE), `/health`; timeouts; structured logging; README.

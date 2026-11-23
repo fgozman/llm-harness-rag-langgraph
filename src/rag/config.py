@@ -264,6 +264,25 @@ class GraphSettings(BaseModel):
     # Extra queries (variants + sub-questions) fused with the standalone query.
     max_query_variants: int = Field(default=4, ge=0, le=6)
     history_turns: int = Field(default=6, ge=0)
+    # End-to-end deadline for one question (CLI and API); the turn is cancelled when it expires.
+    turn_timeout_s: float = Field(default=180.0, gt=0)
+
+
+class ApiSettings(BaseModel):
+    # Loopback only by default: the API has no authentication.
+    host: str = "127.0.0.1"
+    port: int = Field(default=8000, ge=1, le=65535)
+    # Concurrent /ask turns; more get HTTP 429 (models run in-process and share one device).
+    max_concurrent_turns: int = Field(default=4, ge=1)
+    # Folders /ingest may index besides docs_dir (requests outside these are rejected).
+    ingest_roots: list[Path] = Field(default_factory=list[Path])
+    max_question_chars: int = Field(default=4000, ge=1)
+
+
+class LogSettings(BaseModel):
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # text for terminals; json = one object per line for log shippers (the server's recommended format).
+    format: Literal["text", "json"] = "text"
 
 
 class EvaluationSettings(BaseModel):
@@ -316,6 +335,8 @@ class Settings(BaseSettings):
     ingestion: IngestionSettings = Field(default_factory=IngestionSettings)
     graph: GraphSettings = Field(default_factory=GraphSettings)
     corpus: CorpusSettings = Field(default_factory=CorpusSettings)
+    api: ApiSettings = Field(default_factory=ApiSettings)
+    log: LogSettings = Field(default_factory=LogSettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
 
     @model_validator(mode="after")

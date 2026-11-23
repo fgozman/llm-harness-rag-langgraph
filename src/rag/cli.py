@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
-import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -24,21 +23,16 @@ if TYPE_CHECKING:
 app = typer.Typer(help="RAG over a local document folder.", no_args_is_help=True)
 console = Console()
 
-_HEALTH_TIMEOUT_S = 3.0
-
-
-_NOISY_LOGGERS = ("httpx", "docling", "sentence_transformers", "transformers", "huggingface_hub", "RapidOCR")
+log = logging.getLogger(__name__)
 
 
 @app.callback()
 def _main(verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Debug logging.")] = False) -> None:
     """RAG over a local document folder."""
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO, format="%(levelname)s %(name)s: %(message)s"
-    )
-    if not verbose:
-        for name in _NOISY_LOGGERS:
-            logging.getLogger(name).setLevel(logging.WARNING)
+    from rag import logs
+
+    settings = get_settings()
+    logs.configure(level=settings.log.level, fmt=settings.log.format, verbose=verbose)
 
 
 def _start_tracing(settings: Settings) -> None:
@@ -69,33 +63,18 @@ def show_config() -> None:
     console.print_json(json.dumps(settings.model_dump(mode="json")))
 
 
-def _probe(url: str) -> str:
-    try:
-        response = httpx.get(url, timeout=_HEALTH_TIMEOUT_S)
-    except httpx.HTTPError as exc:
-        return f"down ({type(exc).__name__})"
-    return "ok" if response.status_code == 200 else f"down (HTTP {response.status_code})"
-
-
-def _service_checks(settings: Settings) -> list[tuple[str, str, str]]:
-    checks = [("qdrant", settings.qdrant.url, _probe(f"{settings.qdrant.url}/readyz"))]
-    phoenix_url = settings.phoenix.collector_endpoint
-    phoenix_status = _probe(f"{phoenix_url}/healthz") if settings.phoenix.enabled else "disabled"
-    checks.append(("phoenix", phoenix_url, phoenix_status))
-    return checks
-
-
 @app.command()
 def doctor() -> None:
     """Check service reachability; exit 1 if a required service is down."""
-    settings = get_settings()
+    from rag.services import service_checks
+
     table = Table("service", "url", "status")
-    checks = _service_checks(settings)
-    for name, url, status in checks:
-        table.add_row(name, url, status)
+    checks = service_checks(get_settings())
+    for c in checks:
+        table.add_row(c.name, c.url, c.status)
     console.print(table)
     # Phoenix is optional (the app must keep working without tracing), so only Qdrant is fatal.
-    if any(name == "qdrant" and status.startswith("down") for name, _, status in checks):
+    if any(c.failed for c in checks):
         raise typer.Exit(code=1)
 
 
@@ -304,23 +283,37 @@ class _TurnPrinter:
 
 
 def _run_question(graph: Any, question: str, thread_id: str, settings: Settings) -> None:
-    import anthropic
-    import openai
-
-    from rag.graph.build import run_turn
-    from rag.llm.base import LLMError
+    from rag.graph.build import turn_stream
+    from rag.graph.stream import TurnTimeoutError
+    from rag.llm.errors import PROVIDER_ERRORS
 
     printer = _TurnPrinter()
+    user, metadata = _trace_context(settings)
+    stream = turn_stream(
+        graph,
+        question,
+        thread_id=thread_id,
+        timeout_s=settings.graph.turn_timeout_s,
+        user_id=user,
+        metadata=metadata,
+    )
     try:
-        user, metadata = _trace_context(settings)
-        state = run_turn(
-            graph, question, thread_id=thread_id, on_event=printer, user_id=user, metadata=metadata
-        )
-    except (LLMError, anthropic.APIError, openai.APIError) as exc:
+        for event in stream.events():
+            printer(event)
+    except TurnTimeoutError as exc:
+        printer.finish_stream()
+        console.print(f"[red]Timed out:[/red] {exc} (graph.turn_timeout_s)")
+        raise typer.Exit(code=1) from exc
+    except PROVIDER_ERRORS as exc:
         # Provider failures (refusals, truncation, HTTP errors after SDK retries) end the turn cleanly.
         printer.finish_stream()
         console.print(f"[red]LLM error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+    except KeyboardInterrupt:
+        stream.cancel()
+        printer.finish_stream()
+        raise
+    state = stream.result or {}
     final = state.get("final")
     if final is None:
         console.print("[red]No answer was produced.[/red]")
@@ -373,6 +366,25 @@ def chat(
         if question.lower() in ("", "exit", "quit"):
             break
         _run_question(graph, question, thread, settings)
+
+
+@app.command()
+def serve(
+    host: Annotated[str | None, typer.Option(help="Bind address (default api.host, loopback).")] = None,
+    port: Annotated[int | None, typer.Option(help="Port (default api.port).")] = None,
+) -> None:
+    """Run the HTTP API: POST /ask (SSE), POST /ingest, GET /health."""
+    import uvicorn
+
+    from rag.api.app import create_app
+
+    settings = get_settings()
+    bind_host, bind_port = host or settings.api.host, port or settings.api.port
+    if bind_host not in ("127.0.0.1", "localhost", "::1"):
+        log.warning("the API has no authentication and is bound to %s", bind_host)
+    # Logging is already configured (rag.logs); uvicorn must not install its own handlers. Access lines come
+    # from our middleware (with request ids), so uvicorn's access log is off.
+    uvicorn.run(create_app(settings), host=bind_host, port=bind_port, log_config=None, access_log=False)
 
 
 # --- evaluation --------------------------------------------------------------------------------------

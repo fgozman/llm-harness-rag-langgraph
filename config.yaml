@@ -69,5 +69,16 @@ graph:
   min_relevant_passages: 2
   max_query_variants: 4
   history_turns: 6
+  turn_timeout_s: 180          # end-to-end deadline per question (CLI + API)
+
+api:
+  host: 127.0.0.1              # no auth: keep it on loopback
+  port: 8000
+  max_concurrent_turns: 4
+  ingest_roots: []             # folders /ingest may index besides docs_dir
+
+log:
+  level: INFO
+  format: text                 # text | json (one JSON object per line)
 
 # Test corpus sources: scripts/corpus_sources.yaml (SEC contact email: CORPUS__SEC_USER_AGENT_EMAIL in .env).

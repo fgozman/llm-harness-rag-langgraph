@@ -1,4 +1,4 @@
-.PHONY: help install up down ps logs lint fmt typecheck test test-integration check doctor
+.PHONY: help install up down ps logs lint fmt typecheck test test-integration check doctor serve
 
 help:  ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
@@ -39,3 +39,6 @@ check: lint typecheck test  ## Everything that must be green after each change
 
 doctor:  ## Check service reachability
 	uv run rag doctor
+
+serve:  ## Run the HTTP API (POST /ask SSE, POST /ingest, GET /health) on api.host:api.port
+	uv run rag serve

@@ -8,6 +8,7 @@ Models are loaded once per process (see `rag.factory`) and run natively on cuda/
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Sequence
 
 from rag import devices  # sets PYTORCH_ENABLE_MPS_FALLBACK before torch initializes
@@ -52,21 +53,25 @@ class QwenDenseEmbedder:
         if dim is None:
             raise RuntimeError("embedding model did not report a dimension")
         self._dimension = dim
+        # One model instance per process is shared by API requests and ingest jobs: serialise device access.
+        self._lock = threading.Lock()
 
     @property
     def dimension(self) -> int:
         return self._dimension
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
-        vectors = self._model.encode(
-            list(texts), batch_size=self._batch_size, normalize_embeddings=True, convert_to_numpy=True
-        )
+        with self._lock:
+            vectors = self._model.encode(
+                list(texts), batch_size=self._batch_size, normalize_embeddings=True, convert_to_numpy=True
+            )
         return vectors.astype("float32").tolist()
 
     def embed_query(self, text: str) -> list[float]:
-        vector = self._model.encode(
-            [text], prompt=self._query_prompt, normalize_embeddings=True, convert_to_numpy=True
-        )
+        with self._lock:
+            vector = self._model.encode(
+                [text], prompt=self._query_prompt, normalize_embeddings=True, convert_to_numpy=True
+            )
         return vector[0].astype("float32").tolist()
 
 
