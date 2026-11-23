@@ -91,6 +91,7 @@ def build_context(
                 section_path=section,
                 page_start=pages[0],
                 page_end=pages[1],
+                snippet=str(best.payload.get("text", "")),
             )
         )
     return passages

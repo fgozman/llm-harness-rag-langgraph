@@ -49,9 +49,9 @@ src/rag/
   ingestion/           models, discovery, manifest (+parent docstore), parsing, chunking, contextualize, pipeline
   retrieval/           types, qdrant_index (write), qdrant_search (hybrid read), fusion (RRF), filters, rerank,
                        context (parent expansion + budget), retriever (orchestration)
-  llm/                 provider factory, structured output helpers (Phase 3)
-  prompts/             versioned prompts (Phase 3)
-  graph/               state.py, nodes/, edges.py, build.py (Phase 3)
+  llm/                 LLM protocol + native adapters (Anthropic, OpenAI Responses, Ollama chat), schema helper
+  prompts/             versioned prompts (analyze, rewrite, grade, generate, check, common delimiters)
+  graph/               state.py, nodes.py, edges.py, citations.py, build.py (graph, checkpointer, run_turn)
   api/                 FastAPI app (Phase 6)
 eval/                  golden set generation, evaluators, experiment runners (Phase 5)
 scripts/               build_test_corpus.py, corpus_sources.yaml, corpus_builder/ (per-source collectors)
@@ -70,7 +70,7 @@ Subpackages are created in the phase that fills them (no empty stubs).
 - [x] **Phase 2 — Retrieval**: hybrid + RRF, Qwen3 reranker (model-card usage), parent expansion, dedup, context budget,
       metadata filters, `rag search`. Check: hybrid beats dense-only on exact-code query; rerank p50/p95 on mac in PROGRESS.
 - [x] **Test corpus** (Section 2): `scripts/build_test_corpus.py` + `scripts/corpus_builder/` (GAO: highlights only).
-- [ ] **Phase 3 — LangGraph pipeline**: all nodes, routing + loop caps (test-first w/ fake LLM), checkpointer, streaming,
+- [x] **Phase 3 — LangGraph pipeline**: all nodes, routing + loop caps (test-first w/ fake LLM), checkpointer, streaming,
       citations, `rag ask` / `rag chat`. One end-to-end integration test.
 - [ ] **Phase 4 — Phoenix tracing**: register(), manual RETRIEVER/RERANKER spans, session.id, token counts,
       resilient when Phoenix is down.

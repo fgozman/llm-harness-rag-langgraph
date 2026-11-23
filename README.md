@@ -51,6 +51,17 @@ Hybrid search fuses dense (Qwen3-Embedding) and BM25 rankings with Reciprocal Ra
 candidates with Qwen3-Reranker, then expands child chunks to their parent sections within a token budget.
 Latency benchmark: `uv run python scripts/bench_retrieval.py`.
 
+## Asking questions
+
+```bash
+uv run rag ask "What was Uber's revenue in Q3 2026?"     # streamed answer + sources table
+uv run rag chat                                         # multi-turn; follow-ups use the conversation
+uv run rag chat --thread-id <id>                        # resume a conversation (SQLite checkpointer)
+```
+
+Answers cite passages inline as [1], [2] and list the file, page and section of each. If the documents don't
+contain the answer, the reply is "Not found in the documents." Text inside documents is treated as untrusted data.
+
 ## Test corpus (post-cutoff documents for evaluation)
 
 ```bash

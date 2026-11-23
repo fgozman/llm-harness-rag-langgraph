@@ -67,6 +67,48 @@ class Retriever:
         self._cfg = retrieval
         self._rr = reranker_settings
 
+    def search(
+        self,
+        queries: Sequence[str],
+        *,
+        filters: SearchFilters | None = None,
+        mode: SearchMode | None = None,
+    ) -> list[RankedChunk]:
+        """Retrieve for every query variant and fuse all rankings (RRF)."""
+        if not queries:
+            raise ValueError("at least one query is required")
+        rankings = self._searcher.search(
+            queries, mode=mode or self._cfg.mode, limit=self._cfg.candidates_per_ranking, filters=filters
+        )
+        return self._fuse(rankings)
+
+    def rerank_and_expand(
+        self,
+        query: str,
+        candidates: Sequence[RankedChunk],
+        *,
+        rerank: bool = True,
+        top_k: int | None = None,
+        timings: dict[str, float] | None = None,
+    ) -> tuple[list[RankedChunk], list[ContextPassage]]:
+        """Rerank the top candidates against `query`, keep top-k, expand to parent passages within budget."""
+        k = top_k or self._rr.top_k
+        t = time.perf_counter()
+        if rerank and self._reranker is not None and candidates:
+            ranked = self._rerank(query, list(candidates))[:k]
+        else:
+            ranked = list(candidates[:k])
+        rerank_ms = _ms(t)
+        t = time.perf_counter()
+        parent_ids = list(dict.fromkeys(str(c.payload["parent_id"]) for c in ranked))
+        passages = build_context(
+            ranked, self._parents.get_parents(parent_ids), self._count_tokens, self._cfg.context_token_budget
+        )
+        if timings is not None:
+            timings["rerank"] = rerank_ms
+            timings["context"] = _ms(t)
+        return ranked, passages
+
     def retrieve(
         self,
         queries: Sequence[str],
@@ -76,30 +118,13 @@ class Retriever:
         rerank: bool = True,
         top_k: int | None = None,
     ) -> RetrievalResult:
-        if not queries:
-            raise ValueError("at least one query is required")
         timings: dict[str, float] = {}
         start = time.perf_counter()
-        rankings = self._searcher.search(
-            queries, mode=mode or self._cfg.mode, limit=self._cfg.candidates_per_ranking, filters=filters
-        )
+        candidates = self.search(queries, filters=filters, mode=mode)
         timings["search"] = _ms(start)
-
-        candidates = self._fuse(rankings)
-        k = top_k or self._rr.top_k
-        t = time.perf_counter()
-        if rerank and self._reranker is not None and candidates:
-            ranked = self._rerank(queries[0], candidates)[:k]
-        else:
-            ranked = candidates[:k]
-        timings["rerank"] = _ms(t)
-
-        t = time.perf_counter()
-        parent_ids = list(dict.fromkeys(str(c.payload["parent_id"]) for c in ranked))
-        passages = build_context(
-            ranked, self._parents.get_parents(parent_ids), self._count_tokens, self._cfg.context_token_budget
+        ranked, passages = self.rerank_and_expand(
+            queries[0], candidates, rerank=rerank, top_k=top_k, timings=timings
         )
-        timings["context"] = _ms(t)
         timings["total"] = _ms(start)
         return RetrievalResult(list(queries), candidates, ranked, passages, timings)
 

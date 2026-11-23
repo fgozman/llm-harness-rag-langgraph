@@ -121,20 +121,44 @@ PROVIDER_MODELS: dict[str, _ProviderModels] = {
 }
 
 
+LLMTask = Literal["analyze", "rewrite", "grade", "check", "generate"]
+
+
+class TaskSettings(BaseModel):
+    """Which model a graph node uses, and how hard it thinks."""
+
+    model: Literal["cheap", "generation", "upgrade"]
+    # None = the model's default effort.
+    effort: Literal["low", "medium", "high"] | None = None
+    max_tokens: int = Field(default=2048, ge=64)
+    # False = disable thinking (cheap routing calls); None = model default.
+    # Sonnet 5.5 cannot disable thinking, so tasks on the generation model keep None.
+    thinking: bool | None = None
+
+
+def _default_tasks() -> dict[str, TaskSettings]:
+    return {
+        "analyze": TaskSettings(model="cheap", effort="low", max_tokens=512, thinking=False),
+        "rewrite": TaskSettings(model="cheap", effort="medium", max_tokens=2048),
+        "grade": TaskSettings(model="cheap", effort="low", max_tokens=2048, thinking=False),
+        "check": TaskSettings(model="cheap", effort="medium", max_tokens=4096),
+        "generate": TaskSettings(model="generation", max_tokens=8192),
+    }
+
+
 class LLMSettings(BaseModel):
     provider: LLMProvider = "anthropic"
     # None = the provider's default from PROVIDER_MODELS.
     generation_model: str | None = None
     upgrade_model: str | None = None
     cheap_model: str | None = None
-    grading_effort: Effort = "low"
-    rewriting_effort: Effort = "medium"
     ollama_base_url: str = "http://localhost:11434"
     # Optional override for OpenAI-compatible gateways (Azure, proxies); None = api.openai.com.
     openai_base_url: str | None = None
     request_timeout_s: float = 120.0
     max_retries: int = 3
     pricing: dict[str, ModelPricing] = Field(default_factory=lambda: dict(_DEFAULT_PRICING))
+    tasks: dict[str, TaskSettings] = Field(default_factory=_default_tasks)
 
     @model_validator(mode="after")
     def _apply_provider_defaults(self) -> Self:
@@ -227,7 +251,9 @@ class GraphSettings(BaseModel):
     max_rewrite_retries: int = Field(default=2, ge=0)
     max_regenerations: int = Field(default=1, ge=0)
     min_relevant_passages: int = Field(default=2, ge=1)
-    max_query_variants: int = Field(default=4, ge=1, le=4)
+    # Extra queries (variants + sub-questions) fused with the standalone query.
+    max_query_variants: int = Field(default=4, ge=0, le=6)
+    history_turns: int = Field(default=6, ge=0)
 
 
 class CorpusSettings(BaseModel):

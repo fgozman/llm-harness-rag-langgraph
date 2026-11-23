@@ -182,3 +182,13 @@ def test_manifest_lists_indexed_folders_under_a_prefix(tmp_path: Path) -> None:
     root = (tmp_path / "docs").resolve()
     assert manifest.folders_under(root / "sec") == [str(root / "sec"), str(root / "sec" / "q3")]
     assert manifest.folders_under(root) == [str(root), str(root / "sec"), str(root / "sec" / "q3")]
+
+
+def test_search_then_rerank_and_expand_equals_retrieve() -> None:
+    r = retriever(FakeSearcher(RANKINGS), FakeReranker(favour="text of e"))
+    combined = r.retrieve(["q"])
+    candidates = r.search(["q"])
+    ranked, passages = r.rerank_and_expand("q", candidates)
+    assert [c.chunk_id for c in candidates] == [c.chunk_id for c in combined.candidates]
+    assert [c.chunk_id for c in ranked] == [c.chunk_id for c in combined.ranked]
+    assert passages == combined.passages

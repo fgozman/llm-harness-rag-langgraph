@@ -14,8 +14,9 @@ llm:
   # upgrade_model: claude-opus-5-5
   # cheap_model: claude-haiku-5-5
   ollama_base_url: http://localhost:11434
-  grading_effort: low
-  rewriting_effort: medium
+  # Per-node model/effort (defaults in rag.config._default_tasks); override e.g.:
+  # tasks:
+  #   generate: {model: upgrade, max_tokens: 8192}
 
 embedding:
   # model and batch_size default from the hardware profile; set them here to override.
@@ -67,5 +68,6 @@ graph:
   max_regenerations: 1
   min_relevant_passages: 2
   max_query_variants: 4
+  history_turns: 6
 
 # Test corpus sources: scripts/corpus_sources.yaml (SEC contact email: CORPUS__SEC_USER_AGENT_EMAIL in .env).

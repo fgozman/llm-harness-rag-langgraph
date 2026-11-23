@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from functools import cache
+from typing import Any
 
 import anthropic
+import httpx
 import openai
 from qdrant_client import QdrantClient
 
 from rag.config import Device, DType, Settings
 from rag.embeddings import Bm25SparseEmbedder, HFTokenCounter, QwenDenseEmbedder
+from rag.graph.build import GraphDeps, build_checkpointer, build_graph
 from rag.ingestion.context_backends import AnthropicBackend, OpenAIResponsesBackend
 from rag.ingestion.contextualize import ContextBackend, LLMContextualizer
 from rag.ingestion.manifest import Manifest
 from rag.ingestion.parsing import DocumentParser
 from rag.ingestion.pipeline import IngestionPipeline
+from rag.llm.anthropic_llm import AnthropicLLM
+from rag.llm.base import LLM
+from rag.llm.openai_llm import OllamaChatLLM, OpenAIResponsesLLM
 from rag.retrieval.qdrant_index import QdrantChunkIndex
 from rag.retrieval.qdrant_search import QdrantHybridSearcher
 from rag.retrieval.rerank import CrossEncoderReranker, Qwen3Reranker, is_qwen3_reranker
@@ -127,17 +134,41 @@ def build_manifest(settings: Settings) -> Manifest:
     return Manifest(settings.state_dir / "rag.db")
 
 
-def _anthropic_context_backend(settings: Settings, model: str) -> AnthropicBackend:
+def _anthropic_client(settings: Settings, purpose: str) -> anthropic.Anthropic:
     if settings.anthropic_api_key is None:
-        raise ConfigurationError("ANTHROPIC_API_KEY is not set (needed for contextual enrichment).")
-    effort = settings.ingestion.contextualize_effort or "low"
-    if effort in ("none", "minimal"):
-        raise ConfigurationError(f"Anthropic does not accept effort {effort!r}; use low, medium or high.")
-    client = anthropic.Anthropic(
+        raise ConfigurationError(f"ANTHROPIC_API_KEY is not set (needed for {purpose}).")
+    return anthropic.Anthropic(
         api_key=settings.anthropic_api_key.get_secret_value(),
         max_retries=settings.llm.max_retries,  # SDK retries 429/5xx with exponential backoff
         timeout=settings.llm.request_timeout_s,
     )
+
+
+def _openai_client(settings: Settings, purpose: str) -> openai.OpenAI:
+    if settings.openai_api_key is None:
+        raise ConfigurationError(f"OPENAI_API_KEY is not set (needed for {purpose}).")
+    return openai.OpenAI(
+        api_key=settings.openai_api_key.get_secret_value(),
+        base_url=settings.llm.openai_base_url,
+        max_retries=settings.llm.max_retries,
+        timeout=settings.llm.request_timeout_s,
+    )
+
+
+def _ollama_client(settings: Settings) -> openai.OpenAI:
+    return openai.OpenAI(
+        base_url=f"{settings.llm.ollama_base_url.rstrip('/')}/v1/",
+        api_key="ollama",  # required by the SDK, ignored by Ollama
+        max_retries=settings.llm.max_retries,
+        timeout=settings.llm.request_timeout_s,
+    )
+
+
+def _anthropic_context_backend(settings: Settings, model: str) -> AnthropicBackend:
+    effort = settings.ingestion.contextualize_effort or "low"
+    if effort in ("none", "minimal"):
+        raise ConfigurationError(f"Anthropic does not accept effort {effort!r}; use low, medium or high.")
+    client = _anthropic_client(settings, "contextual enrichment")
     return AnthropicBackend(
         client,
         model=model,
@@ -148,14 +179,7 @@ def _anthropic_context_backend(settings: Settings, model: str) -> AnthropicBacke
 
 
 def _openai_context_backend(settings: Settings, model: str) -> OpenAIResponsesBackend:
-    if settings.openai_api_key is None:
-        raise ConfigurationError("OPENAI_API_KEY is not set (needed for contextual enrichment with OpenAI).")
-    client = openai.OpenAI(
-        api_key=settings.openai_api_key.get_secret_value(),
-        base_url=settings.llm.openai_base_url,
-        max_retries=settings.llm.max_retries,
-        timeout=settings.llm.request_timeout_s,
-    )
+    client = _openai_client(settings, "contextual enrichment with OpenAI")
     return OpenAIResponsesBackend(
         client,
         model=model,
@@ -166,12 +190,7 @@ def _openai_context_backend(settings: Settings, model: str) -> OpenAIResponsesBa
 
 
 def _ollama_context_backend(settings: Settings, model: str) -> OpenAIResponsesBackend:
-    client = openai.OpenAI(
-        base_url=f"{settings.llm.ollama_base_url.rstrip('/')}/v1/",
-        api_key="ollama",  # required by the SDK, ignored by Ollama
-        max_retries=settings.llm.max_retries,
-        timeout=settings.llm.request_timeout_s,
-    )
+    client = _ollama_client(settings)
     effort = settings.ingestion.contextualize_effort
     return OpenAIResponsesBackend(
         client,
@@ -221,3 +240,42 @@ def build_ingestion_pipeline(settings: Settings) -> IngestionPipeline:
         ingestion=settings.ingestion,
         contextualizer=contextualizer,
     )
+
+
+def _ollama_thinking_support(settings: Settings) -> Callable[[str], bool]:
+    base = settings.llm.ollama_base_url.rstrip("/")
+
+    @cache
+    def supports(model: str) -> bool:
+        # /api/show lists model capabilities (e.g. ["completion", "thinking"]).
+        try:
+            info = httpx.post(f"{base}/api/show", json={"model": model}, timeout=10).json()
+        except (httpx.HTTPError, ValueError):
+            return False  # unknown: sending thinking params could fail the request, omitting them can't
+        return "thinking" in info.get("capabilities", [])
+
+    return supports
+
+
+def build_llm(settings: Settings) -> LLM:
+    llm = settings.llm
+    assert llm.cheap_model and llm.generation_model and llm.upgrade_model  # filled per provider
+    models = {"cheap": llm.cheap_model, "generation": llm.generation_model, "upgrade": llm.upgrade_model}
+    if llm.provider == "anthropic":
+        return AnthropicLLM(_anthropic_client(settings, "question answering"), models=models, tasks=llm.tasks)
+    if llm.provider == "openai":
+        return OpenAIResponsesLLM(
+            _openai_client(settings, "question answering"), models=models, tasks=llm.tasks
+        )
+    return OllamaChatLLM(
+        _ollama_client(settings),
+        models=models,
+        tasks=llm.tasks,
+        supports_thinking=_ollama_thinking_support(settings),
+    )
+
+
+def build_qa_graph(settings: Settings) -> Any:
+    """The compiled LangGraph pipeline with a SQLite checkpointer (conversation memory per thread_id)."""
+    deps = GraphDeps(llm=build_llm(settings), retriever=build_retriever(settings), settings=settings.graph)
+    return build_graph(deps, checkpointer=build_checkpointer(settings.state_dir / "checkpoints.db"))

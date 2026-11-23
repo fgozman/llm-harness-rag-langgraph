@@ -78,6 +78,7 @@ class ContextPassage:
     section_path: tuple[str, ...]
     page_start: int | None
     page_end: int | None
+    snippet: str  # text of the best-ranked child chunk: what actually matched the query
 
 
 def payload_section(payload: dict[str, object]) -> tuple[str, ...]:

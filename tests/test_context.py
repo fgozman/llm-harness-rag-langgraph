@@ -42,6 +42,8 @@ def test_children_expand_to_their_parent_in_rank_order() -> None:
     assert [p.text for p in passages] == ["parent two full text", "parent one full text"]
     assert [p.index for p in passages] == [1, 2]
     assert passages[0].expanded and passages[0].page_start == 1 and passages[0].page_end == 3
+    # The snippet quotes the retrieved child chunk, not the start of the (much larger) parent.
+    assert passages[0].snippet == "two"
 
 
 def test_siblings_dedupe_into_one_passage_keeping_best_position() -> None:

@@ -6,7 +6,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import httpx
 import typer
@@ -16,6 +16,7 @@ from rich.table import Table
 from rag.config import Settings, get_settings
 
 if TYPE_CHECKING:
+    from rag.graph.state import FinalAnswer
     from rag.ingestion.pipeline import IngestStats
     from rag.retrieval.retriever import RetrievalResult, SearchMode
 
@@ -222,3 +223,123 @@ def _print_search(result: RetrievalResult, *, show_context: bool) -> None:
             where = f"{passage.file_name} p.{passage.page_start}" if passage.page_start else passage.file_name
             console.rule(f"[{passage.index}] {where} — {' > '.join(passage.section_path)}")
             console.print(passage.text)
+
+
+# --- question answering ----------------------------------------------------------------------------
+
+
+class _TurnPrinter:
+    """Renders graph events: dim status lines, streamed answer tokens, then the final answer and sources."""
+
+    def __init__(self) -> None:
+        self.streamed = ""
+        self._streaming = False
+
+    def __call__(self, event: dict[str, Any]) -> None:
+        kind = event.get("type")
+        if kind == "status":
+            self._end_stream()
+            console.print(f"[dim]… {event.get('text', '')}[/dim]")
+        elif kind == "answer_start":
+            self._end_stream()
+            self.streamed = ""
+            if int(event.get("attempt", 1)) > 1:
+                console.print("[dim]↻ revised answer:[/dim]")
+        elif kind == "token":
+            text = str(event.get("text", ""))
+            self.streamed += text
+            self._streaming = True
+            console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
+
+    def finish_stream(self) -> None:
+        self._end_stream()
+
+    def _end_stream(self) -> None:
+        if self._streaming:
+            console.print()
+            self._streaming = False
+
+    def finish(self, final: FinalAnswer) -> None:
+        self._end_stream()
+        # The streamed draft is already on screen; re-print only when the final text differs (cautious answer,
+        # direct replies, abstentions, or invalid citation markers removed).
+        if final.text.strip() != self.streamed.strip():
+            console.print(final.text, markup=False, highlight=False)
+        if final.status != "answered":
+            console.print(f"[dim]({final.status.replace('_', ' ')})[/dim]")
+        if final.citations:
+            table = Table("#", "source", "pages", "section", "snippet", title="Sources", title_justify="left")
+            for c in final.citations:
+                pages = (
+                    ""
+                    if c.page_start is None
+                    else (str(c.page_start) if c.page_start == c.page_end else f"{c.page_start}-{c.page_end}")
+                )
+                table.add_row(f"[{c.index}]", c.file_name, pages, c.section[:40], c.snippet[:100])
+            console.print(table)
+
+
+def _run_question(graph: Any, question: str, thread_id: str) -> None:
+    import anthropic
+    import openai
+
+    from rag.graph.build import run_turn
+    from rag.llm.base import LLMError
+
+    printer = _TurnPrinter()
+    try:
+        state = run_turn(graph, question, thread_id=thread_id, on_event=printer)
+    except (LLMError, anthropic.APIError, openai.APIError) as exc:
+        # Provider failures (refusals, truncation, HTTP errors after SDK retries) end the turn cleanly.
+        printer.finish_stream()
+        console.print(f"[red]LLM error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+    final = state.get("final")
+    if final is None:
+        console.print("[red]No answer was produced.[/red]")
+        raise typer.Exit(code=1)
+    printer.finish(final)
+
+
+def _qa_graph() -> Any:
+    from rag.factory import ConfigurationError, build_qa_graph
+
+    try:
+        return build_qa_graph(get_settings())
+    except ConfigurationError as exc:
+        console.print(f"[red]Configuration error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+
+@app.command()
+def ask(
+    question: Annotated[str, typer.Argument(help="Your question about the documents.")],
+    thread_id: Annotated[str | None, typer.Option(help="Continue a conversation thread.")] = None,
+) -> None:
+    """Answer one question with citations (streams the answer)."""
+    import uuid
+
+    thread = thread_id or uuid.uuid4().hex
+    _run_question(_qa_graph(), question, thread)
+    console.print(f"[dim]thread: {thread}[/dim]")
+
+
+@app.command()
+def chat(
+    thread_id: Annotated[str | None, typer.Option(help="Resume a conversation thread.")] = None,
+) -> None:
+    """Multi-turn conversation; follow-up questions use the conversation history."""
+    import uuid
+
+    thread = thread_id or uuid.uuid4().hex
+    graph = _qa_graph()
+    console.print(f"[dim]thread {thread} — empty line, 'exit' or Ctrl-D to quit[/dim]")
+    while True:
+        try:
+            question = console.input("[bold]you>[/bold] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            break
+        if question.lower() in ("", "exit", "quit"):
+            break
+        _run_question(graph, question, thread)
