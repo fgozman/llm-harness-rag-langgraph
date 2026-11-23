@@ -58,7 +58,7 @@ ingestion:
   contextualize_batch_threshold: 200
   contextualize_concurrency: 4
   contextualize_effort: low
-  contextualize_max_prompt_tokens: 70000   # local-tokenizer count; Haiku's price tier changes at 100K
+  contextualize_max_prompt_tokens: 8000    # local-tokenizer count; must stay < 100K (Haiku price tier)
   window_files: 50
   pdf_ocr: true
   language: en

@@ -13,8 +13,77 @@ Read `SPEC.md` and `PLAN.md` first after any context reset.
 | 2 — Retrieval | ✅ done (2026-11-23) |
 | 3 — LangGraph pipeline | ✅ done (2026-11-23) |
 | 4 — Phoenix tracing | ✅ done (2026-11-23) |
-| 5 — Evaluation | ⏭ next |
-| 6 | not started |
+| 5 — Evaluation | ✅ done (2026-11-23) — golden set awaiting human review |
+| 6 — API + hardening | ⏭ next |
+
+## Phase 5 — done
+
+Code: `src/rag/evaluation/` (`golden.py` generation/verification, `metrics.py`, `evaluators.py` (code + LLM
+judges), `experiment.py` (dataset upload, tasks, Phoenix experiment runner, local reports), `runner.py`),
+`src/rag/llm/usage.py` (per-model token meter → cost per query), prompts `golden.py`/`judge.py`, CLI
+`rag golden generate|upload`, `rag eval [--no-retrieval] [--variant] [--category] [--limit]`, `rag compare`.
+LLM tasks added: `golden` (Sonnet), `judge` (Haiku, medium), `closed_book` (Sonnet). Tests: metrics, golden
+(quote check, pairing, accept/reject loop, unanswerable filter, canary import), evaluators, variants, runner
+with a fake Phoenix client, usage metering in all adapters; integration: closed-book experiment in Phoenix.
+`make check`: 320 unit tests.
+
+Golden set (`eval/golden.jsonl`, 82 items, all `reviewed: false`): exact_figure 14, temporal 10, comparison 8,
+table_lookup 12, release_notes 8, factual 10, unanswerable 8, canary 8 + canary_unanswerable 4. Each generated
+item quotes its evidence verbatim (checked) and passed a Haiku judge (self-contained, supported, unambiguous);
+unanswerables were rejected if retrieval over the real index answered them. First-pass review notes, ambiguous
+items and leaky questions: `eval/REVIEW.md`.
+
+Contextual enrichment of the test corpus → collection `test_corpus_ctx` (state `.rag/test_corpus_ctx`), 8,684
+chunks, 0 without context, Message Batches, ~$2.1. Default context budget lowered 70K → 8K tokens (cost model).
+
+Results (Phoenix dataset `rag-golden-82q-e1406297`, judges = Haiku 5.5, generation = Sonnet 5.5):
+
+| metric | closed-book | contextual (eval) | contextual (compare) | plain (compare) |
+|---|---|---|---|---|
+| correctness | 0.201 | 0.939 | 0.933 | 0.915 |
+| abstention correct | 0.171 | 0.963 | 0.951 | 0.951 |
+| faithfulness | – | 0.923 | 0.908 | 0.898 |
+| answer relevance | – | 0.988 | 1.000 | 0.988 |
+| citation support | – | 0.933 | 0.933 | 0.899 |
+| hit@6 (documents) | – | 1.000 | 1.000 | 1.000 |
+| MRR | – | 0.940 | 0.954 | 0.931 |
+| NDCG@6 | – | 0.955 | 0.965 | 0.945 |
+| latency p50 | 1.8 s | 17.4 s | 15.3 s | 59.3 s* |
+| cost / query | $0.002 | $0.013 | $0.013 | $0.012 |
+
+Correctness by category (contextual eval / plain): comparison 0.875 / 0.750, temporal 0.950 / 0.900, table 0.875 /
+0.833, release notes 0.875 / 0.875, factual 0.900 / 0.900, exact figures, canaries, unanswerables 1.0 / 1.0.
+
+Interpretation:
+- RAG vs closed-book: 0.94 vs 0.20 correctness — the corpus tests retrieval, not memory. 3 leaky questions
+  (`exact_figure-007`, `factual-004`, `table_lookup-007`) flagged for rewrite.
+- Unanswerables and canary negatives: 12/12 abstained in every RAG run; no hallucinated answers.
+- Contextual vs plain: small, consistent gains on ranking (MRR +0.023, NDCG +0.020) and citation support
+  (+0.034); the correctness gap (+0.018 ≈ 1.5 questions) is **within run-to-run noise** — the same contextual
+  config scored 0.939 and 0.933 in two runs (temporal 0.95 vs 0.85). Not conclusive at n=82.
+- *Latency: both variants did the same work (1.32 vs 1.35 retrieval attempts, 4 regenerations each); the plain
+  run's 59 s p50 is environmental (machine swapping ~8 GB during that run), not an enrichment effect.
+- hit@6 is saturated (1.0 everywhere): questions generated from one chunk with its wording are easy to retrieve.
+  A harder retrieval set (paraphrased questions, multi-hop) is needed to separate retrievers.
+- Failures worth fixing: false abstentions where retrieval missed the period-specific chunk (`comparison-002`,
+  `factual-006`); faithfulness flags on some correct answers (e.g. `exact_figure-003`, `factual-009`) — check
+  whether the generator over-claims or the judge is strict.
+- Total spend ≈ $7 (tasks $3.24, enrichment ~$2.1, judges ~$0.5, golden generation ~$1) vs the ~$15–20 estimate.
+
+Decisions / findings:
+- Own LLM-as-judge evaluators on our adapter (native structured outputs) instead of `arize-phoenix-evals` model
+  wrappers, avoiding sampling-param issues on Claude 5.5; registered with `create_evaluator(kind=LLM|CODE)`.
+- Retrieval metrics are document-level (gold = source files), unanswerables excluded (score None, not 0).
+- Datasets are content-addressed (`rag-golden-<n>q-<hash>`): editing the golden set creates a new dataset.
+- **Closed-book baseline redesign**: the first version let the model opt out ("knows=false"); it opted out of all
+  82, making leak detection impossible. Now the model always gives a best guess plus a confidence flag;
+  correctness/leaky are judged on the guess, abstention on confidence. Flawed run archived in
+  `eval/results/discarded/` and deleted from Phoenix.
+- Phoenix's sync `run_experiment` runs tasks sequentially and evaluators afterwards, so per-task cost metering
+  (reset meter → run → read) is accurate; judge cost is not included in cost/query.
+- Interruptions: the Mac rebooted mid-run (ingest resumed from the manifest; golden set had already been saved);
+  logs now go to `.rag/logs/`. Polling lesson: some identical tool calls returned stale/concurrent results, so
+  progress checks now print wall-clock time and loop on the process instead of sleeping blindly.
 
 ## Phase 4 — done
 
@@ -336,15 +405,12 @@ Phase 1:
   scripted edit silently missed the reformatted call; the pipeline-level test passed, nothing covered the CLI).
   Fixed, with a CLI test that pins flag passthrough (`--force`, `--retry-failed`).
 
-## Next (Phase 5 — Evaluation)
+## Next (Phase 6 — API + hardening)
 
-- Golden set generation (`eval/golden.jsonl`, ~80 items incl. canary facts and unanswerables), human review step,
-  Phoenix dataset upload, experiments with evaluators (retrieval hit@k/MRR/NDCG, faithfulness, correctness,
-  relevance, citation support, abstention, latency/cost), `rag eval [--no-retrieval]` with leaky-question
-  flagging, `rag compare` (e.g. contextual enrichment on/off, reranker on/off, weighted RRF, top-k).
-- Verify arize-phoenix-client 3.7 datasets/experiments API and arize-phoenix-evals before coding.
-- Contextual enrichment of the test corpus is needed for the with/without comparison (Haiku batch cost estimate
-  first: ~8.7k chunks).
+- FastAPI `/ingest`, `/ask` (SSE: status/token events, final citations payload), `/health`; request timeouts
+  (also bounds the once-observed stalled API stream), structured logging; README with Mermaid architecture,
+  configuration reference, eval instructions; `curl` check against `/ask`.
+- Human review of `eval/golden.jsonl` (user), then re-run `rag eval`.
 
 ## Phase 2 notes (kept for reference)
 

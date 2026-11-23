@@ -11,12 +11,14 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 import openai
+from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletion
 from openai.types.responses import Response
 from pydantic import BaseModel
 
 from rag.config import LLMTask, TaskSettings
 from rag.llm.base import LLMError, Message, TokenCallback, parse_structured, strict_json_schema
+from rag.llm.usage import METER
 
 
 class OpenAIResponsesLLM:
@@ -56,6 +58,7 @@ class OpenAIResponsesLLM:
             }
         }
         response: Response = self._client.responses.create(**params, stream=False)
+        _record_response(response)
         _raise_for_response(response, task)
         return parse_structured(response.output_text, schema)
 
@@ -74,10 +77,30 @@ class OpenAIResponsesLLM:
                 if on_token:
                     on_token(event.delta)
             elif event.type == "response.completed":
+                _record_response(event.response)
                 _raise_for_response(event.response, task)
             elif event.type in ("response.failed", "response.incomplete"):
                 raise LLMError(f"{task}: response {event.type.split('.')[-1]}")
         return "".join(parts)
+
+
+def _record_response(response: Response) -> None:
+    u = response.usage
+    if u is None:
+        return
+    cached = u.input_tokens_details.cached_tokens or 0
+    # OpenAI's input_tokens include cached tokens; record them separately (cheaper rate).
+    METER.record(
+        response.model,
+        input_tokens=u.input_tokens - cached,
+        output_tokens=u.output_tokens,
+        cache_read_tokens=cached,
+    )
+
+
+def _record_completion(model: str, usage: CompletionUsage | None) -> None:
+    if usage is not None:
+        METER.record(model, input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens)
 
 
 def _raise_for_response(response: Response, task: str) -> None:
@@ -132,6 +155,7 @@ class OllamaChatLLM:
             "json_schema": {"name": schema.__name__, "schema": strict_json_schema(schema), "strict": True},
         }
         completion: ChatCompletion = self._client.chat.completions.create(**params, stream=False)
+        _record_completion(params["model"], completion.usage)
         choice = completion.choices[0]
         if choice.finish_reason == "length":
             raise LLMError(f"{task}: output truncated at max_tokens")
@@ -146,9 +170,13 @@ class OllamaChatLLM:
         on_token: TokenCallback | None = None,
     ) -> str:
         parts: list[str] = []
+        params = self._params(task, system, messages)
+        # include_usage adds a final chunk (no choices) carrying token counts.
         for chunk in self._client.chat.completions.create(
-            **self._params(task, system, messages), stream=True
+            **params, stream=True, stream_options={"include_usage": True}
         ):
+            if chunk.usage is not None:
+                _record_completion(params["model"], chunk.usage)
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta.content

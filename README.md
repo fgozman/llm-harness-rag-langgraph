@@ -69,6 +69,24 @@ question answering are traced automatically: every graph node, retriever and rer
 and LLM calls with token counts; conversation turns are grouped by session (the thread id). If Phoenix is not
 running, tracing is skipped with one warning. Disable it with `PHOENIX__ENABLED=false`.
 
+## Evaluation
+
+```bash
+uv run rag golden generate        # eval/golden.jsonl from the indexed corpus (LLM-written, auto-verified)
+uv run rag golden upload          # Phoenix dataset (content-addressed: edits create a new version)
+uv run rag eval --no-retrieval    # closed-book baseline; flags "leaky" questions answered without retrieval
+uv run rag eval                   # full pipeline as a Phoenix experiment; per-example scores in the UI
+uv run rag compare --variant "ctx:qdrant.collection=test_corpus_ctx,state_dir=.rag/test_corpus_ctx" \
+                   --variant "plain:qdrant.collection=test_corpus,state_dir=.rag/test_corpus"
+```
+
+Evaluators: retrieval hit@k / MRR / NDCG@k against the gold documents, correctness vs the reference answer,
+faithfulness to the passages used, answer relevance, citation support, abstention on unanswerable questions,
+latency and cost per query. LLM judges use the cheap model; deterministic metrics are code. Variants are
+`name:dotted.setting=value,...` overrides of any setting (e.g. `reranker.enabled=false`, `reranker.top_k=3`,
+`retrieval.mode=dense`). Reports are also saved to `eval/results/`. Review the golden set before trusting
+results: see `eval/REVIEW.md`.
+
 ## Test corpus (post-cutoff documents for evaluation)
 
 ```bash

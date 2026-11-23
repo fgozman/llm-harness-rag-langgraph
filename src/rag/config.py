@@ -121,7 +121,8 @@ PROVIDER_MODELS: dict[str, _ProviderModels] = {
 }
 
 
-LLMTask = Literal["analyze", "rewrite", "grade", "check", "generate"]
+# Graph nodes + evaluation (golden-set generation, LLM-as-judge evaluators, closed-book baseline).
+LLMTask = Literal["analyze", "rewrite", "grade", "check", "generate", "golden", "judge", "closed_book"]
 
 
 class TaskSettings(BaseModel):
@@ -143,6 +144,10 @@ def _default_tasks() -> dict[str, TaskSettings]:
         "grade": TaskSettings(model="cheap", effort="low", max_tokens=2048, thinking=False),
         "check": TaskSettings(model="cheap", effort="medium", max_tokens=4096),
         "generate": TaskSettings(model="generation", max_tokens=8192),
+        "golden": TaskSettings(model="generation", effort="medium", max_tokens=4096),
+        "judge": TaskSettings(model="cheap", effort="medium", max_tokens=4096),
+        # Same model as `generate`: leaky-question detection must reflect what the answering model knows.
+        "closed_book": TaskSettings(model="generation", max_tokens=4096),
     }
 
 
@@ -241,9 +246,10 @@ class IngestionSettings(BaseModel):
     # budget), ollama: thinking disabled. "none"/"minimal" are not valid for Anthropic.
     contextualize_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
     contextualize_max_output_tokens: int = Field(default=150, ge=16)
-    # Spec: keep contextualization prompts under 100K tokens.
-    # Measured with the local (Qwen) tokenizer, which can undercount vs Claude's, hence the margin.
-    contextualize_max_prompt_tokens: int = Field(default=70_000, le=100_000)
+    # Spec: keep contextualization prompts under 100K tokens. Long documents get a per-section window
+    # (outline + neighbouring sections) and each distinct window is a separate cache prefix: 8K keeps the test
+    # corpus at ~$2.4-3.8 vs $5-21 at 70K (cost model 2026-11-23), ample for a 1-2 sentence blurb.
+    contextualize_max_prompt_tokens: int = Field(default=8_000, ge=1_000, le=100_000)
     batch_poll_interval_s: float = Field(default=30.0, gt=0)
     # Files are processed in windows so one huge run doesn't hold every chunk in memory at once.
     window_files: int = Field(default=50, ge=1)
@@ -258,6 +264,20 @@ class GraphSettings(BaseModel):
     # Extra queries (variants + sub-questions) fused with the standalone query.
     max_query_variants: int = Field(default=4, ge=0, le=6)
     history_turns: int = Field(default=6, ge=0)
+
+
+class EvaluationSettings(BaseModel):
+    golden_path: Path = Path("eval/golden.jsonl")
+    canary_facts_path: Path = Path("eval/canary_facts.jsonl")
+    corpus_dir: Path = Path("data/test_corpus")
+    results_dir: Path = Path("eval/results")
+    dataset_prefix: str = "rag-golden"
+    # Experiments trace into their own Phoenix project so interactive traces stay readable.
+    project_name: str = "rag-eval"
+    seed: int = 7
+    unanswerable: int = Field(default=8, ge=0)
+    canary_answerable: int = Field(default=8, ge=0)
+    canary_unanswerable: int = Field(default=4, ge=0)
 
 
 class CorpusSettings(BaseModel):
@@ -296,6 +316,7 @@ class Settings(BaseSettings):
     ingestion: IngestionSettings = Field(default_factory=IngestionSettings)
     graph: GraphSettings = Field(default_factory=GraphSettings)
     corpus: CorpusSettings = Field(default_factory=CorpusSettings)
+    evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
 
     @model_validator(mode="after")
     def _apply_profile_defaults(self) -> Self:

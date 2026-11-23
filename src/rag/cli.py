@@ -16,6 +16,7 @@ from rich.table import Table
 from rag.config import Settings, get_settings
 
 if TYPE_CHECKING:
+    from rag.evaluation.experiment import ExperimentReport
     from rag.graph.state import FinalAnswer
     from rag.ingestion.pipeline import IngestStats
     from rag.retrieval.retriever import RetrievalResult, SearchMode
@@ -372,3 +373,112 @@ def chat(
         if question.lower() in ("", "exit", "quit"):
             break
         _run_question(graph, question, thread, settings)
+
+
+# --- evaluation --------------------------------------------------------------------------------------
+
+golden_app = typer.Typer(help="Golden evaluation set (generate, upload to Phoenix).", no_args_is_help=True)
+app.add_typer(golden_app, name="golden")
+
+
+@golden_app.command("generate")
+def golden_generate() -> None:
+    """Generate eval/golden.jsonl from the indexed corpus (LLM-written, auto-verified; needs human review)."""
+    from collections import Counter
+
+    from rag.evaluation.runner import generate_golden
+
+    settings = get_settings()
+    _start_tracing(settings)
+    items, cost = generate_golden(settings)
+    table = Table(
+        "category", "items", title=f"Golden set: {len(items)} items -> {settings.evaluation.golden_path}"
+    )
+    for category, count in sorted(Counter(i.category for i in items).items()):
+        table.add_row(category, str(count))
+    console.print(table)
+    console.print(
+        f"[dim]generation cost ${cost:.2f}; all items have reviewed=false until a human checks them[/dim]"
+    )
+
+
+@golden_app.command("upload")
+def golden_upload() -> None:
+    """Upload eval/golden.jsonl as a Phoenix dataset (content-addressed; re-uploading is a no-op)."""
+    from rag.evaluation.runner import upload_golden
+
+    name, count = upload_golden(get_settings())
+    console.print(f"Phoenix dataset [bold]{name}[/bold] ({count} examples)")
+
+
+_EVAL_VARIANT_HELP = "name[:key=value,...] settings overrides, e.g. ctx:qdrant.collection=x,state_dir=y"
+
+
+@app.command("eval")
+def evaluate(
+    no_retrieval: Annotated[
+        bool, typer.Option("--no-retrieval", help="Closed-book baseline (no retrieval).")
+    ] = False,
+    variant: Annotated[str, typer.Option(help=_EVAL_VARIANT_HELP)] = "baseline",
+    category: Annotated[list[str] | None, typer.Option(help="Only these golden categories.")] = None,
+    limit: Annotated[int | None, typer.Option(help="Only the first N examples.")] = None,
+) -> None:
+    """Run the golden set as a Phoenix experiment and print the report."""
+    from rag.evaluation.runner import CLOSED_BOOK, latest_report, leaky_questions, run_evaluation
+
+    settings = get_settings()
+    report = run_evaluation(
+        settings, variant=variant, closed_book=no_retrieval, categories=category or (), limit=limit
+    )
+    baseline = None if no_retrieval else latest_report(settings.evaluation.results_dir, CLOSED_BOOK)
+    _print_report(report, baseline)
+    source = report if no_retrieval else baseline
+    leaky = leaky_questions(source) if source is not None else []
+    if leaky:
+        console.print(
+            f"[yellow]Leaky questions (answered correctly without retrieval):[/yellow] {', '.join(leaky)}"
+        )
+
+
+@app.command()
+def compare(
+    variant: Annotated[list[str], typer.Option(help=_EVAL_VARIANT_HELP + " (repeat; at least two)")],
+    category: Annotated[list[str] | None, typer.Option(help="Only these golden categories.")] = None,
+    limit: Annotated[int | None, typer.Option(help="Only the first N examples.")] = None,
+) -> None:
+    """Run several configurations as separate Phoenix experiments and compare them side by side."""
+    from rag.evaluation.runner import run_evaluation
+
+    if len(variant) < 2:
+        raise typer.BadParameter("give at least two --variant values")
+    settings = get_settings()
+    reports = [run_evaluation(settings, variant=v, categories=category or (), limit=limit) for v in variant]
+    table = Table("metric", *(r.metadata["variant"] for r in reports), title="Comparison")
+    for evaluator in reports[0].evaluators():
+        table.add_row(evaluator, *(_fmt(r.mean(evaluator)) for r in reports))
+    console.print(table)
+    for r in reports:
+        console.print(f"[dim]{r.metadata['variant']}: experiment {r.name}[/dim]")
+
+
+def _fmt(value: float | None) -> str:
+    return "-" if value is None else f"{value:.3f}"
+
+
+def _print_report(report: ExperimentReport, closed_book: ExperimentReport | None) -> None:
+    table = Table("evaluator", "mean", "n", title=f"Experiment {report.name}")
+    for evaluator in report.evaluators():
+        table.add_row(evaluator, _fmt(report.mean(evaluator)), str(len(report.scores(evaluator))))
+    console.print(table)
+    p50, p95 = report.percentile("latency_s", 0.5), report.percentile("latency_s", 0.95)
+    cost = _fmt(report.mean("cost_usd"))
+    console.print(f"[dim]latency p50 {_fmt(p50)}s, p95 {_fmt(p95)}s; cost/query {cost} USD[/dim]")
+    rag = report.by_category("correctness")
+    book = closed_book.by_category("correctness") if closed_book else {}
+    this = "closed-book" if report.metadata.get("closed_book") else "RAG"
+    by_cat = Table(
+        "category", f"correctness ({this})", "closed-book baseline", title="Correctness by category"
+    )
+    for cat in sorted(set(rag) | set(book)):
+        by_cat.add_row(cat, _fmt(rag.get(cat)), _fmt(book.get(cat)))
+    console.print(by_cat)

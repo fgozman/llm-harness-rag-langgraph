@@ -1,4 +1,5 @@
 import json
+from collections.abc import Iterator
 from typing import Any, Literal
 
 import anthropic
@@ -11,6 +12,7 @@ from rag.config import TaskSettings
 from rag.llm.anthropic_llm import AnthropicLLM
 from rag.llm.base import LLMError, Message, strict_json_schema
 from rag.llm.openai_llm import OllamaChatLLM, OpenAIResponsesLLM
+from rag.llm.usage import METER, UsageMeter
 
 
 class Inner(BaseModel):
@@ -262,3 +264,56 @@ def test_ollama_omits_thinking_params_for_models_without_thinking() -> None:
     llm.structured("rewrite", system="S", messages=MESSAGES, schema=Out)
     for body in rec.bodies:
         assert "think" not in body and "reasoning_effort" not in body
+
+
+# --- usage accounting --------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def meter() -> Iterator[UsageMeter]:
+    METER.reset()
+    yield METER
+    METER.reset()
+
+
+def test_anthropic_calls_record_usage(meter: UsageMeter) -> None:
+    claude(Recorder([claude_message(json.dumps(OUT_JSON))])).structured(
+        "grade", system="S", messages=MESSAGES, schema=Out
+    )
+    usage = meter.snapshot()["cheap-model"]
+    assert (usage.calls, usage.input_tokens, usage.output_tokens) == (1, 1, 1)
+
+
+def test_openai_calls_record_usage_with_cached_tokens_separated(meter: UsageMeter) -> None:
+    body = oa_response(json.dumps(OUT_JSON))
+    body["usage"] = {"input_tokens": 400, "input_tokens_details": {"cached_tokens": 300}, "output_tokens": 20,
+                     "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 420}  # fmt: skip
+    oai(Recorder([httpx2.Response(200, json=body)])).structured(
+        "grade", system="S", messages=MESSAGES, schema=Out
+    )
+    usage = meter.snapshot()["cheap-model"]
+    assert (usage.input_tokens, usage.cache_read_tokens, usage.output_tokens) == (100, 300, 20)
+
+
+def test_ollama_structured_and_streaming_record_usage(meter: UsageMeter) -> None:
+    completion = {"id": "c", "object": "chat.completion", "created": 0, "model": "m",
+                  "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": json.dumps(OUT_JSON)}}],
+                  "usage": {"prompt_tokens": 30, "completion_tokens": 7, "total_tokens": 37}}  # fmt: skip
+    last: dict[str, Any] = {
+        **chunk(None),
+        "choices": [],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
+    }
+    rec = Recorder(
+        [
+            httpx2.Response(200, json=completion),
+            sse([(None, chunk("Hi", "stop")), (None, last), (None, "[DONE]")]),
+        ]
+    )
+    llm = ollama(rec)
+    llm.structured("grade", system="S", messages=MESSAGES, schema=Out)
+    llm.generate("generate", system="S", messages=MESSAGES)
+    snap = meter.snapshot()
+    assert (snap["cheap-model"].input_tokens, snap["cheap-model"].output_tokens) == (30, 7)
+    assert (snap["gen-model"].input_tokens, snap["gen-model"].output_tokens) == (12, 3)
+    assert rec.bodies[1]["stream_options"] == {"include_usage": True}

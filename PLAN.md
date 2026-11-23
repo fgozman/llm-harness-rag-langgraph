@@ -53,7 +53,8 @@ src/rag/
   prompts/             versioned prompts (analyze, rewrite, grade, generate, check, common delimiters)
   graph/               state.py, nodes.py, edges.py, citations.py, build.py (graph, checkpointer, run_turn)
   api/                 FastAPI app (Phase 6)
-eval/                  golden set generation, evaluators, experiment runners (Phase 5)
+src/rag/evaluation/    golden set generation, metrics, evaluators, experiment runner (CLI-importable)
+eval/                  golden.jsonl, canary_facts.jsonl, REVIEW.md, results/ (gitignored reports)
 scripts/               build_test_corpus.py, corpus_sources.yaml, corpus_builder/ (per-source collectors)
 tests/                 unit + integration (`-m integration`), fixtures in tests/fixtures/
 ```
@@ -74,6 +75,6 @@ Subpackages are created in the phase that fills them (no empty stubs).
       citations, `rag ask` / `rag chat`. One end-to-end integration test.
 - [x] **Phase 4 — Phoenix tracing**: register(), manual RETRIEVER/RERANKER spans, session.id, token counts,
       resilient when Phoenix is down.
-- [ ] **Phase 5 — Evaluation**: golden set, Phoenix dataset, experiments + evaluators, `rag eval [--no-retrieval]`,
+- [x] **Phase 5 — Evaluation**: golden set, Phoenix dataset, experiments + evaluators, `rag eval [--no-retrieval]`,
       `rag compare`, leaky-question flagging, results summary.
 - [ ] **Phase 6 — API + hardening**: FastAPI `/ingest`, `/ask` (SSE), `/health`; timeouts; structured logging; README.

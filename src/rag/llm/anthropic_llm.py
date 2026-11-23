@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from rag.config import LLMTask, TaskSettings
 from rag.llm.base import LLMError, Message, TokenCallback, parse_structured, strict_json_schema
+from rag.llm.usage import METER
 
 
 class AnthropicLLM:
@@ -47,6 +48,7 @@ class AnthropicLLM:
             "schema": strict_json_schema(schema),
         }
         message: anthropic.types.Message = self._client.messages.create(**params, stream=False)
+        _record(message)
         _raise_for_stop(message.stop_reason, task)
         # Thinking blocks (if any) are ignored: only the final text carries the JSON.
         text = "".join(b.text for b in message.content if b.type == "text")
@@ -67,8 +69,20 @@ class AnthropicLLM:
                 if on_token:
                     on_token(text)
             final = stream.get_final_message()
+        _record(final)
         _raise_for_stop(final.stop_reason, task)
         return "".join(parts)
+
+
+def _record(message: anthropic.types.Message) -> None:
+    u = message.usage
+    METER.record(
+        message.model,
+        input_tokens=u.input_tokens,
+        output_tokens=u.output_tokens,
+        cache_read_tokens=u.cache_read_input_tokens or 0,
+        cache_write_tokens=u.cache_creation_input_tokens or 0,
+    )
 
 
 def _raise_for_stop(stop_reason: str | None, task: str) -> None:
